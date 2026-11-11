@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use tauri::{Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, ipc::Invoke};
 use tauri_plugin_window_state::WindowExt;
-use tauri_runtime_electron::ElectronRuntime;
 
 #[cfg(windows)]
 use windows_sys::Win32::UI::{
@@ -21,7 +20,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::menu::{PredefinedMenuItem, Submenu};
 
 #[cfg(target_os = "macos")]
-static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<MenuItem<ElectronRuntime>>>> =
+static MACOS_FULLSCREEN_MENU_ITEM: OnceLock<Mutex<Option<MenuItem<tauri::Wry>>>> =
     OnceLock::new();
 
 #[cfg(target_os = "macos")]
@@ -190,7 +189,7 @@ fn build_tray<R: Runtime>(app: &crate::AppHandle<R>) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-pub fn install_macos_menu(app: &crate::AppHandle<ElectronRuntime>) -> tauri::Result<()> {
+pub fn install_macos_menu(app: &crate::AppHandle) -> tauri::Result<()> {
     let setting = crate::config::get_store_dat_setting(app);
     crate::config::i18n::set_language(crate::config::i18n::lang_from_setting(&setting.language));
 
@@ -584,7 +583,7 @@ pub struct ViewMenuEntry {
 
 #[tauri::command]
 pub fn sync_view_menu(
-    window: crate::Window<ElectronRuntime>,
+    window: crate::Window,
     entries: Vec<ViewMenuEntry>,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -636,7 +635,7 @@ pub fn sync_view_menu(
 }
 
 #[cfg(target_os = "macos")]
-fn sync_macos_fullscreen_menu(window: &crate::Window<ElectronRuntime>) {
+fn sync_macos_fullscreen_menu(window: &crate::Window) {
     if !window.is_focused().unwrap_or(false) {
         return;
     }
@@ -706,7 +705,7 @@ fn shared_exe_icons() -> Option<(HICON, HICON)> {
 }
 
 #[cfg(windows)]
-fn apply_windows_window_icon(window: &crate::WebviewWindow<ElectronRuntime>) {
+fn apply_windows_window_icon(window: &crate::WebviewWindow) {
     let Some((large, small)) = shared_exe_icons() else {
         log::warn!("[icon] exe icon resource unavailable, taskbar keeps the degraded small icon");
         return;
@@ -745,7 +744,7 @@ fn shell_frame_for(transparent: bool) -> bool {
 
 struct NativeNotificationsAvailable(bool);
 
-pub(super) fn native_notifications_script(app: &crate::AppHandle<ElectronRuntime>) -> String {
+pub(super) fn native_notifications_script(app: &crate::AppHandle) -> String {
     format!(
         "window.__DSH_NOTIFICATIONS_AVAILABLE__ = {};",
         app.state::<NativeNotificationsAvailable>().inner().0
@@ -753,9 +752,9 @@ pub(super) fn native_notifications_script(app: &crate::AppHandle<ElectronRuntime
 }
 
 fn with_shell_chrome<'a>(
-    app: &'a crate::AppHandle<ElectronRuntime>,
-    builder: WebviewWindowBuilder<'a, ElectronRuntime, crate::AppHandle<ElectronRuntime>>,
-) -> tauri::Result<WebviewWindowBuilder<'a, ElectronRuntime, crate::AppHandle<ElectronRuntime>>> {
+    app: &'a crate::AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, crate::AppHandle>,
+) -> tauri::Result<WebviewWindowBuilder<'a, tauri::Wry, crate::AppHandle>> {
     let appearance = crate::config::get_store_dat_setting(app).appearance;
     let transparent = shell_window_transparent(&appearance);
     let frame = shell_frame_for(transparent);
@@ -825,7 +824,7 @@ fn with_shell_chrome<'a>(
 
 /// 主窗口壳层注入的初始主题：显式偏好直接取；跟随系统时按窗口拿到的系统外观折算。
 fn main_shell_theme(
-    app: &crate::AppHandle<ElectronRuntime>,
+    app: &crate::AppHandle,
     system: Option<tauri::Theme>,
 ) -> crate::desktop::shell::Theme {
     use crate::desktop::shell::Theme;
@@ -838,19 +837,11 @@ fn main_shell_theme(
 }
 
 pub fn build_main_window(
-    app: &crate::AppHandle<ElectronRuntime>,
-) -> tauri::Result<crate::WebviewWindow<ElectronRuntime>> {
+    app: &crate::AppHandle,
+) -> tauri::Result<crate::WebviewWindow> {
     let app_handle = app.clone();
 
     let _geometry_restore = tauri_plugin_window_state::GeometryRestoreGuard::begin();
-
-    let _host_paths =
-        tauri_runtime_electron::WebviewSetup::new(MAIN_WINDOW_LABEL)
-            .authenticated_web_host_session_key(
-                crate::desktop::session_key::window_authenticated_session_key(app, MAIN_WINDOW_LABEL),
-            )
-            .browser_host()
-            .preload_script(include_str!("preload.js.inc"));
 
     let mut webview_builder =
         WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
@@ -879,9 +870,6 @@ pub fn build_main_window(
         })
         .build()?;
     crate::desktop::window::connect_browser_events(webview_window.as_ref())?;
-    tauri_runtime_electron::on_new_window(webview_window.as_ref(), move |url, features| {
-        crate::desktop::window::on_new_window(app_handle.clone(), url, features)
-    })?;
     #[cfg(windows)]
     apply_windows_window_icon(&webview_window);
     apply_window_background(app, &webview_window);
@@ -899,8 +887,8 @@ pub fn build_main_window(
 }
 
 fn apply_window_background(
-    app: &crate::AppHandle<ElectronRuntime>,
-    window: &crate::WebviewWindow<ElectronRuntime>,
+    app: &crate::AppHandle,
+    window: &crate::WebviewWindow,
 ) {
     let appearance = crate::config::get_store_dat_setting(app).appearance;
     let background = if shell_window_transparent(&appearance) {
@@ -917,20 +905,14 @@ fn apply_window_background(
 }
 
 pub fn build_shell_window(
-    app: &crate::AppHandle<ElectronRuntime>,
+    app: &crate::AppHandle,
     label: String,
     title: &str,
     path: std::path::PathBuf,
     navigation_script: Option<&str>,
-) -> tauri::Result<crate::WebviewWindow<ElectronRuntime>> {
+) -> tauri::Result<crate::WebviewWindow> {
     let app_handle = app.clone();
 
-    let _setup = tauri_runtime_electron::WebviewSetup::new(&label)
-        .authenticated_web_host_session_key(
-            crate::desktop::session_key::window_authenticated_session_key(app, &label),
-        )
-        .browser_host()
-        .preload_script(include_str!("preload.js.inc"));
     let mut webview_builder = with_shell_chrome(
         app,
         WebviewWindowBuilder::new(app, label, WebviewUrl::App(path))
@@ -959,9 +941,6 @@ pub fn build_shell_window(
         })
         .build()?;
     crate::desktop::window::connect_browser_events(window.as_ref())?;
-    tauri_runtime_electron::on_new_window(window.as_ref(), move |url, features| {
-        crate::desktop::window::on_new_window(app_handle.clone(), url, features)
-    })?;
     #[cfg(windows)]
     apply_windows_window_icon(&window);
     apply_window_background(app, &window);
@@ -975,11 +954,11 @@ pub fn build_shell_window(
 }
 
 pub fn build_extra_window(
-    app: &crate::AppHandle<ElectronRuntime>,
+    app: &crate::AppHandle,
     path: std::path::PathBuf,
     profile: &str,
     navigation_script: Option<&str>,
-) -> tauri::Result<crate::WebviewWindow<ElectronRuntime>> {
+) -> tauri::Result<crate::WebviewWindow> {
     let sequence = EXTRA_WINDOW_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     let label = format!("window-{sequence}");
     crate::service::workflow::instances::bind_window(&label, profile);
@@ -1264,8 +1243,8 @@ mod macos_bundle_tests {
     }
 }
 
-pub fn handler() -> impl Fn(Invoke<ElectronRuntime>) -> bool + Send + Sync + 'static {
-    let handler: fn(Invoke<ElectronRuntime>) -> bool = tauri::generate_handler![
+pub fn handler() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
+    let handler: fn(Invoke) -> bool = tauri::generate_handler![
         crate::desktop::window::host_harness_document,
         crate::desktop::window::begin_harness_restart,
         crate::desktop::window::get_harness_restart,
@@ -1460,10 +1439,9 @@ fn menu_action_window_label<'a>(
     main
 }
 
-pub fn builder() -> tauri::Builder<ElectronRuntime> {
-    let builder = tauri::Builder::<tauri_runtime_electron::ElectronRuntime>::new()
-        .plugin(tauri_runtime_electron::init())
-        .plugin(tauri_runtime_electron::window::init());
+pub fn builder() -> tauri::Builder<tauri::Wry> {
+    let builder = tauri::Builder::new()
+        ;
 
     let builder = builder
         .setup(|app| {
