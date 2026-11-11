@@ -9,7 +9,7 @@
     "window-*"
   ],
   "permissions": [
-    "electron-window:allow-set-effects"
+    "core:window:allow-set-effects"
   ],
   "platforms": [
     "windows",

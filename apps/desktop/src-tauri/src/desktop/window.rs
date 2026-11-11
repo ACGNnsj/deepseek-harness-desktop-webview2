@@ -5,31 +5,19 @@ use std::{
 };
 use tauri::Manager;
 use tauri::{Emitter, Runtime, Url, webview::DownloadEvent};
-use tauri_runtime_electron::{NewWindowFeatures, NewWindowResponse};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::config;
 use crate::desktop::payload::DownloadFinishedPayload;
 
-pub fn on_new_window(
-    app_handle: crate::AppHandle<tauri_runtime_electron::ElectronRuntime>,
-    url: Url,
-    _features: NewWindowFeatures,
-) -> NewWindowResponse {
+pub fn on_new_window(app_handle: crate::AppHandle, url: Url) {
     if matches!(url.scheme(), "http" | "https") {
-        let client = app_handle
-            .state::<tauri_runtime_electron::ElectronClient>()
-            .inner()
-            .clone();
-        let target = url.to_string();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = tauri_runtime_electron::open_external(&client, &target).await {
-                log::warn!("[new-window] open in browser failed {e}");
-            }
-        });
+        if let Err(error) = app_handle.opener().open_url(url.to_string(), None::<&str>) {
+            log::warn!("[new-window] open in browser failed {error}");
+        }
     } else {
         log::debug!("[new-window] denied {url}");
     }
-    NewWindowResponse::Deny
 }
 
 /// 接管下载：保存到系统下载目录，重名时自动加 " (n)" 后缀，
@@ -1158,8 +1146,8 @@ const PRESENTATION_FULL_SIDEBAR: &str = "full-sidebar";
 /// 需要主线程事件循环回包，主线程调用会死锁（与窗口创建路径同约束）。
 #[tauri::command]
 pub async fn create_app_window(
-    app_handle: AppHandle<tauri_runtime_electron::ElectronRuntime>,
-    window: Window<tauri_runtime_electron::ElectronRuntime>,
+    app_handle: AppHandle,
+    window: Window,
     session_id: Option<String>,
     presentation: Option<String>,
     profile: Option<String>,
@@ -1281,12 +1269,12 @@ mod session_navigation_tests {
 /// 壳层导航栏「文件 → 退出」：与托盘「退出」同语义，走 `exit(0)` 完整退出
 /// （触发 `RunEvent::ExitRequested` 的主窗口几何保存与 `RunEvent::Exit` 的进程回收）。
 #[tauri::command]
-pub fn quit_app(app_handle: AppHandle<tauri_runtime_electron::ElectronRuntime>) {
+pub fn quit_app(app_handle: AppHandle) {
     app_handle.exit(0);
 }
 
 #[tauri::command]
-pub fn toggle_devtools(window: Webview<tauri_runtime_electron::ElectronRuntime>) {
+pub fn toggle_devtools(window: Webview) {
     if window.is_devtools_open() {
         window.close_devtools();
     } else {

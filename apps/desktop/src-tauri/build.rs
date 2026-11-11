@@ -29,10 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(target_os = "macos")]
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
-    let attributes = tauri_build::Attributes::new().plugin(
-        "electron-window",
-        tauri_build::InlinedPlugin::new().commands(&["set_effects"]),
-    );
+    let attributes = tauri_build::Attributes::new();
     let attributes = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
@@ -46,8 +43,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         attributes
     };
     tauri_build::try_build(attributes)?;
-    #[cfg(unix)]
-    mirror_directory_links()?;
     Ok(())
 }
 

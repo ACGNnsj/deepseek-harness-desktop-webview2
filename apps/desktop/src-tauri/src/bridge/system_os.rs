@@ -9,6 +9,7 @@ use crate::logger;
 use crate::service::{core, plugin, profile};
 use crate::AppHandle;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
 #[tauri::command]
@@ -65,8 +66,10 @@ pub async fn open_in_browser(
     crate::service::workflow::instances::scope(profile, async move {
         let url =
             config::get_dsh_service_url(crate::service::workflow::instances::port(&app_handle));
-        let client = app_handle.state::<tauri_runtime_electron::ElectronClient>();
-        tauri_runtime_electron::open_external(client.inner(), &url).await
+        app_handle
+            .opener()
+            .open_url(url, None::<&str>)
+            .map_err(|error| error.to_string())
     })
     .await
 }
@@ -110,8 +113,7 @@ pub async fn open_in_app(
         return Err(format!("OPEN_IN_APP_REJECTED: {}", webview.label()));
     }
     if let Some(path) = path {
-        let client = app_handle.state::<tauri_runtime_electron::ElectronClient>();
-        tauri_runtime_electron::open_path(client.inner(), &path).await?;
+        tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| error.to_string())?;
     }
     webview
         .window()
@@ -330,8 +332,10 @@ pub async fn open_external_url(app_handle: AppHandle, url: String) -> Result<(),
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(format!("EXTERNAL_URL_INVALID: {url}"));
     }
-    let client = app_handle.state::<tauri_runtime_electron::ElectronClient>();
-    tauri_runtime_electron::open_external(client.inner(), &url).await
+    app_handle
+        .opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

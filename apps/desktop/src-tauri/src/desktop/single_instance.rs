@@ -123,7 +123,7 @@ fn dispatch(inbox: &Arc<Mutex<Inbox>>, app: &AppHandle) -> Result<(), String> {
     app.run_on_main_thread(move || {
         let pending = std::mem::take(&mut inbox.lock().unwrap_or_else(|e| e.into_inner()).pending);
         for request in pending {
-            if let Some(deep_link) = handle.try_state::<DeepLink<tauri_runtime_electron::ElectronRuntime>>() {
+            if let Some(deep_link) = handle.try_state::<DeepLink<tauri::Wry>>() {
                 deep_link.handle_cli_arguments(request.args.iter());
             }
             crate::utils::show_main_window(&handle);
@@ -360,7 +360,7 @@ impl SingleInstance {
     #[cfg(not(debug_assertions))]
     pub fn attach(&self, app: &AppHandle) -> Result<(), String> {
         if crate::utils::shell_window(app).is_none()
-            || app.try_state::<DeepLink<tauri_runtime_electron::ElectronRuntime>>().is_none()
+            || app.try_state::<DeepLink<tauri::Wry>>().is_none()
         {
             return Err("SINGLE_INSTANCE_NOT_READY: attach after the main window and deep-link plugin are ready".into());
         }
