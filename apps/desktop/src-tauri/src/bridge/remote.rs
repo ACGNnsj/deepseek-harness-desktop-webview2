@@ -143,9 +143,7 @@ pub async fn remote(
     let host = crate::service::workflow::instances::scope(profile,
         crate::service::workflow::auth::authenticated_host(&app_handle, port),
     ).await?;
-    let client = app_handle.state::<tauri_runtime_electron::ElectronClient>();
-    let cookie = host.cookie_header(client.inner()).await.map_err(|error| format!("REMOTE_AUTH_FAILED: {error}"))?;
-    remote_request_authenticated(port, method, path, payload, Some(&cookie)).await
+    remote_request_authenticated(port, method, path, payload, Some(host.cookie_header())).await
 }
 
 #[tauri::command]
@@ -167,7 +165,6 @@ pub async fn navigate_remote_harness(app: AppHandle, webview: crate::Webview, ma
         capability["webviews"] = serde_json::json!([webview.label()]);
         capability["remote"] = serde_json::json!({"urls": [format!("{origin}/*")]});
         app.add_capability(capability.to_string()).map_err(|error| error.to_string())?;
-        tauri_runtime_electron::set_webview_trusted_origin(&webview, &origin).map_err(|error| error.to_string())?;
         crate::desktop::window::set_remote_shell(&app, &label, Some(crate::desktop::window::RemoteShellState { machine_id, trusted_origin: origin }));
         webview.navigate(url).map_err(|error| error.to_string())
     } else {

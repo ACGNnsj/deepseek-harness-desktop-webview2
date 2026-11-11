@@ -124,9 +124,17 @@ struct HarnessDocument {
     closed: bool,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WebviewLoadState {
+    Started,
+    Finished,
+    Failed,
+    ProcessGone,
+}
+
 impl HarnessDocument {
-    fn advance(&mut self, event: tauri_runtime_electron::WebviewLoadState) -> u64 {
-        use tauri_runtime_electron::WebviewLoadState;
+    fn advance(&mut self, event: WebviewLoadState) -> u64 {
         self.revision += 1;
         self.loaded = event == WebviewLoadState::Finished;
         self.alive = false;
@@ -385,8 +393,10 @@ pub async fn prepare_harness_restart(app: AppHandle, webview: Webview, id: Strin
     if url == bootstrap {
         return Ok(true);
     }
-    tauri_runtime_electron::navigate_webview_with_trusted_origin(&webview, &harness_bootstrap_origin(&bootstrap)?, bootstrap.as_str())
-        .await.map_err(|error| format!("HARNESS_RESTART_NAVIGATE_FAILED: {error}"))?;
+    let _ = harness_bootstrap_origin(&bootstrap)?;
+    webview
+        .navigate(bootstrap)
+        .map_err(|error| format!("HARNESS_RESTART_NAVIGATE_FAILED: {error}"))?;
     Ok(true)
 }
 
@@ -514,7 +524,7 @@ pub async fn host_harness_document(
         forget_harness_restart(&app, webview.window().label());
         return Err("HARNESS_DOCUMENT_PROFILE_CHANGED".into());
     }
-    tauri_runtime_electron::bind_authenticated_web_host(&webview, &host)
+    let launch_url = Url::parse(host.launch_url())
         .map_err(|error| format!("HARNESS_AUTH_BIND_FAILED: {error}"))?;
     app.manage(HostedOrigins::default());
     app.state::<HostedOrigins>()
@@ -534,14 +544,14 @@ pub async fn host_harness_document(
             .unwrap_or_else(|error| error.into_inner())
             .bind_target(webview.window().label(), &profile, &operation.id, &url);
     }
-    webview.navigate(url).map_err(|error| error.to_string())
+    webview.navigate(launch_url).map_err(|error| error.to_string())
 }
 
 async fn authenticate_harness_host(
     app: &AppHandle,
     webview: &Webview,
     url: &Url,
-) -> Result<tauri_runtime_electron::AuthenticatedWebHost, String> {
+) -> Result<crate::service::workflow::auth::AuthenticatedWebHost, String> {
     let profile = crate::service::workflow::instances::window_profile(app, webview.window().label());
     let port = crate::service::workflow::instances::scope_sync(profile.clone(), || {
         crate::service::workflow::instances::port(app)
@@ -554,45 +564,29 @@ async fn authenticate_harness_host(
     ).await
 }
 
-fn track_harness_document(app: &AppHandle, guest: &Webview, owner: &str, url: &Url) -> Result<(), String> {
+fn register_harness_document(
+    app: &AppHandle,
+    label: &str,
+    owner: &str,
+    url: &Url,
+) -> (Arc<Mutex<HarnessDocument>>, String) {
     app.manage(HarnessDocuments::default());
     let document = Arc::new(Mutex::new(HarnessDocument {
-        label: guest.label().to_owned(), owner: owner.to_owned(), ..Default::default()
+        label: label.to_owned(),
+        owner: owner.to_owned(),
+        ..Default::default()
     }));
-    app.state::<HarnessDocuments>().0.lock().unwrap().insert(guest.label().to_owned(), document.clone());
-    let app = app.clone();
-    let view = guest.clone();
+    app.state::<HarnessDocuments>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(label.to_owned(), document.clone());
     let proof = format!(
         "Boolean(location.origin === {} && Array.isArray(window.__DSH_BOOT__?.entries) && window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label === {})",
         serde_json::to_string(&url.origin().ascii_serialization()).unwrap(),
-        serde_json::to_string(guest.label()).unwrap()
+        serde_json::to_string(label).unwrap()
     );
-    tauri_runtime_electron::on_webview_load_state(guest, move |event| {
-        let (revision, snapshot) = {
-            let mut document = document.lock().unwrap();
-            let revision = document.advance(event);
-            (revision, document.clone())
-        };
-        snapshot.emit(&app);
-        if event == tauri_runtime_electron::WebviewLoadState::Finished {
-            let document = document.clone();
-            let app = app.clone();
-            if let Err(error) = view.eval_with_callback(proof.clone(), move |value| {
-                let snapshot = {
-                    let mut document = document.lock().unwrap();
-                    document
-                        .confirm(revision, value == "true")
-                        .then(|| document.clone())
-                };
-                if let Some(snapshot) = snapshot {
-                    snapshot.emit(&app);
-                }
-            }) {
-                log::warn!("[Webview] document verification failed: {error}");
-            }
-        }
-    })
-    .map_err(|error| error.to_string())
+    (document, proof)
 }
 
 #[tauri::command]
@@ -674,15 +668,52 @@ pub async fn prepare_harness_webview(
     };
     static NEXT_GUEST: AtomicU64 = AtomicU64::new(1);
     let label = format!("harness-{}", NEXT_GUEST.fetch_add(1, Ordering::Relaxed));
+    let initial_url = match host.as_ref() {
+        Some(host) => Url::parse(host.launch_url()).map_err(|error| error.to_string())?,
+        None => url.clone(),
+    };
+    let (document, proof) = register_harness_document(&app, &label, webview.window().label(), &url);
     let origin = url.origin();
-    let mut builder = tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(url.clone()))
+    let app_handle = app.clone();
+    let load_app = app.clone();
+    let mut builder = tauri::WebviewBuilder::new(&label, tauri::WebviewUrl::External(initial_url))
+        .on_new_window(move |url, _| {
+            on_new_window(app_handle.clone(), url);
+            tauri::webview::NewWindowResponse::Deny
+        })
+        .on_page_load(move |view, payload| {
+            let state = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => WebviewLoadState::Started,
+                tauri::webview::PageLoadEvent::Finished => WebviewLoadState::Finished,
+            };
+            let (revision, snapshot) = {
+                let mut document = document.lock().unwrap();
+                let revision = document.advance(state);
+                (revision, document.clone())
+            };
+            snapshot.emit(&load_app);
+            if state == WebviewLoadState::Finished {
+                let document = document.clone();
+                let app = load_app.clone();
+                if let Err(error) = view.eval_with_callback(proof.clone(), move |value| {
+                    let snapshot = {
+                        let mut document = document.lock().unwrap();
+                        document
+                            .confirm(revision, value == "true")
+                            .then(|| document.clone())
+                    };
+                    if let Some(snapshot) = snapshot {
+                        snapshot.emit(&app);
+                    }
+                }) {
+                    log::warn!("[Webview] document verification failed: {error}");
+                }
+            }
+        })
         .transparent(true)
         .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .initialization_script(include_str!("browser.js.inc"))
         .initialization_script(super::builder::native_notifications_script(&app))
-        // 「打开方式」必须由 Electron 主进程的 shell 交给系统，页内 detached spawn
-        // 在 Windows 上无法激活目标窗口（issue #1346）。只注入本地 guest：远程
-        // Harness 的操作不该让本机窗口让位。
         .initialization_script(if remote {
             ""
         } else {
@@ -705,8 +736,6 @@ pub async fn prepare_harness_webview(
         builder = builder.initialization_script(session_navigation_script(session, presentation)?);
     }
     if !remote {
-        // 远程 Harness 的失败由它自己的人机界面负责，壳层只接管本机 guest 的
-        // 官方失败卡片（「Failed to load plugins」）；壳层据此切错误页并定位插件。
         builder = builder
             .initialization_script(format!(
                 "globalThis.__DSH_SHELL__ = {};",
@@ -717,73 +746,76 @@ pub async fn prepare_harness_webview(
     let capability = harness_capability(&label, &url)?;
     app.add_capability(capability.to_string())
         .map_err(|error| error.to_string())?;
-    // keep:effect 宿主路径只有 preload 隔离世界里的 webUtils 读得到，而远程 Harness
-    // 读不到本机路径，所以桥只注入本地 guest，远程拖入回落成上传（issue #1325）。
-    let setup = tauri_runtime_electron::WebviewSetup::new(&label).browser_host();
-    let _setup = if remote {
-        setup
-    } else {
-        setup
-            .authenticated_web_host(host.as_ref().ok_or("HARNESS_AUTH_HOST_MISSING")?)
-            .preload_script(include_str!("preload.js.inc"))
+    let guest = match webview.window().add_child(
+        builder,
+        tauri::LogicalPosition::new(-1., -1.),
+        tauri::LogicalSize::new(1., 1.),
+    ) {
+        Ok(guest) => guest,
+        Err(error) => {
+            if let Some(documents) = app.try_state::<HarnessDocuments>() {
+                documents.0.lock().unwrap().remove(&label);
+            }
+            return Err(error.to_string());
+        }
     };
-    let guest = webview
-        .window()
-        .add_child(
-            builder,
-            tauri::LogicalPosition::new(-1., -1.),
-            tauri::LogicalSize::new(1., 1.),
-        )
-        .map_err(|error| error.to_string())?;
     if let Err(error) = guest.hide() {
-        let _ = guest.close();
-        return Err(error.to_string());
-    }
-    let owner = guest.clone();
-    if let Err(error) = tauri_runtime_electron::on_browser_open_requested(&guest, move |lease, url| {
-        let _ = owner.emit_to(tauri::EventTarget::webview(owner.label()), "dsh-browser-open-requested", serde_json::json!({ "lease": lease, "url": url }));
-    }) {
-        let _ = guest.close();
-        return Err(error.to_string());
-    }
-    let app_handle = app.clone();
-    if let Err(error) = tauri_runtime_electron::on_new_window(&guest, move |url, features| {
-        on_new_window(app_handle.clone(), url, features)
-    }) {
-        let _ = guest.close();
-        return Err(error.to_string());
-    }
-    if let Err(error) = track_harness_document(&app, &guest, webview.window().label(), &url) {
         let _ = release_harness_webview(app.clone(), webview, label.clone()).await;
-        return Err(error);
+        return Err(error.to_string());
     }
     Ok(label)
 }
 
-pub(super) fn connect_browser_events(webview: &Webview) -> tauri::Result<()> {
-    let owner = webview.clone();
-    tauri_runtime_electron::on_browser_open_requested(webview, move |lease, url| {
-        let _ = owner.emit_to(
-            tauri::EventTarget::webview(owner.label()),
-            "dsh-browser-open-requested",
-            serde_json::json!({ "lease": lease, "url": url }),
-        );
-    })
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserGuestReservation {
+    pub lease: String,
+    pub partition: String,
+}
+
+#[derive(Default)]
+struct BrowserGuestState {
+    next_id: u64,
+    leases: HashMap<String, String>,
+}
+
+pub(super) fn connect_browser_events(_webview: &Webview) -> tauri::Result<()> {
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn acquire_browser_guest(
     webview: Webview,
     workspace: String,
-) -> Result<tauri_runtime_electron::BrowserGuestReservation, String> {
-    tauri_runtime_electron::acquire_browser_guest(&webview, &workspace)
-        .map_err(|error| error.to_string())
+) -> Result<BrowserGuestReservation, String> {
+    let trimmed = workspace.trim();
+    if trimmed.is_empty() {
+        return Err("BROWSER_GUEST_INVALID_WORKSPACE: workspace must not be empty".into());
+    }
+    let key = super::session_key::authenticated_session_key(webview.label(), trimmed);
+    let app = webview.app_handle();
+    app.manage(Mutex::new(BrowserGuestState::default()));
+    let state = app.state::<Mutex<BrowserGuestState>>();
+    let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+    guard.next_id += 1;
+    let lease = format!("browser-lease-{}", guard.next_id);
+    let partition = format!("persist:dsh-browser-{key}");
+    guard
+        .leases
+        .insert(lease.clone(), webview.label().to_owned());
+    Ok(BrowserGuestReservation { lease, partition })
 }
 
 #[tauri::command]
 pub async fn release_browser_guest(webview: Webview, lease: String) -> Result<(), String> {
-    tauri_runtime_electron::release_browser_guest(&webview, &lease)
-        .map_err(|error| error.to_string())
+    let app = webview.app_handle();
+    if let Some(state) = app.try_state::<Mutex<BrowserGuestState>>() {
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        if guard.leases.get(&lease).map(String::as_str) == Some(webview.label()) {
+            guard.leases.remove(&lease);
+        }
+    }
+    Ok(())
 }
 
 fn harness_capability(label: &str, url: &Url) -> Result<serde_json::Value, String> {
@@ -1064,7 +1096,7 @@ mod harness_restart_tests {
 #[cfg(test)]
 #[test]
 fn harness_document_discards_proof_after_navigation_crash_and_release() {
-    use tauri_runtime_electron::WebviewLoadState::{Started, Finished, Failed, ProcessGone};
+    use WebviewLoadState::{Started, Finished, Failed, ProcessGone};
     let mut document = HarnessDocument::default();
     let first = document.advance(Finished);
     assert!(document.confirm(first, true));

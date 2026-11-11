@@ -23,7 +23,7 @@ pub(crate) fn build_plugin_envs(
 ) -> Result<HashMap<String, String>, String> {
     // 运行时只有一个：随包 Electron（Node 模式）。canonicalize 掉 Windows 的
     // `\\?\` verbatim 前缀：cmd.exe 无法直接启动带该前缀的路径（issue #121）。
-    let node = crate::service::workflow::electron_executable(app_handle)?;
+    let node = crate::service::workflow::node_executable(app_handle)?;
     let node_abs = dunce::canonicalize(&node).unwrap_or(node);
     let bin_dir = cli::get_bin_dir(app_handle);
     let mut envs = HashMap::from([

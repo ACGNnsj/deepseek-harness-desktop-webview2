@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/store', () => ({ store: { get setting() {
   return mocks.setting
 } } }))
-vi.mock('tauri-runtime-electron/api/window', () => ({
+vi.mock('@tauri-apps/api/window', () => ({
   Effect: { Acrylic: 'acrylic', Mica: 'mica', UnderWindowBackground: 'underWindowBackground' },
   EffectState: { FollowsWindowActiveState: 'followsWindowActiveState' },
   getCurrentWindow: () => ({ label: 'appearance-window', setEffects: mocks.setEffects, clearEffects: mocks.clearEffects }),

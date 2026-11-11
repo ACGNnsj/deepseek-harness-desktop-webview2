@@ -20,7 +20,7 @@ pub(super) struct Instance {
     pub process: Mutex<Option<super::process::OwnedProcess>>,
     pub launch_url: Mutex<LaunchUrl>,
     pub authenticated_host:
-        tokio::sync::Mutex<Option<(String, tauri_runtime_electron::AuthenticatedWebHost)>>,
+        tokio::sync::Mutex<Option<(String, super::auth::AuthenticatedWebHost)>>,
     pub launching: Arc<std::sync::atomic::AtomicBool>,
     pub status: Mutex<Status>,
     pub port: Mutex<Option<u16>>,

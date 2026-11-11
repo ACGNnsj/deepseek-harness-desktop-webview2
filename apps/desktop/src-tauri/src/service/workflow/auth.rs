@@ -1,4 +1,18 @@
-use tauri::Manager;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedWebHost {
+    launch_url: String,
+    cookie_header: String,
+}
+
+impl AuthenticatedWebHost {
+    pub fn launch_url(&self) -> &str {
+        &self.launch_url
+    }
+
+    pub fn cookie_header(&self) -> &str {
+        &self.cookie_header
+    }
+}
 
 pub(super) fn launch_url_in(text: &str, port: u16) -> Option<String> {
     text.lines()
@@ -12,9 +26,11 @@ pub(super) fn launch_url_in(text: &str, port: u16) -> Option<String> {
                 && url.username().is_empty()
                 && url.password().is_none()
                 && url.fragment().is_none()
-                && url
-                    .query_pairs()
-                    .any(|(key, value)| key == "token" && !value.is_empty())
+                && {
+                    let mut tokens = url.query_pairs().filter(|(key, _)| key == "token");
+                    matches!(tokens.next(), Some((_, value)) if !value.is_empty())
+                        && tokens.next().is_none()
+                }
         })
         .map(Into::into)
 }
@@ -40,10 +56,59 @@ pub fn launch_url(port: u16) -> Result<String, String> {
         .ok_or_else(|| "HARNESS_NOT_READY: waiting for this Harness process launch URL".into())
 }
 
+async fn exchange_launch_url(launch: &str) -> Result<AuthenticatedWebHost, String> {
+    let url = tauri::Url::parse(launch).map_err(|error| error.to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("invalid Host launch URL".into());
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.status() != reqwest::StatusCode::SEE_OTHER {
+        return Err(format!("unexpected status {}", response.status()));
+    }
+    let cookie = response
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|val| val.to_str().ok())
+        .filter_map(|raw| raw.split(';').next())
+        .map(str::trim)
+        .find(|part| !part.is_empty())
+        .ok_or("Host authentication missing Set-Cookie")?
+        .to_string();
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|val| val.to_str().ok())
+        .unwrap_or("/");
+    let document = url.join(location).map_err(|error| error.to_string())?;
+    if document.origin() != url.origin()
+        || !document.username().is_empty()
+        || document.password().is_some()
+    {
+        return Err("Host authentication redirected outside its origin".into());
+    }
+    Ok(AuthenticatedWebHost {
+        launch_url: launch.to_string(),
+        cookie_header: cookie,
+    })
+}
+
 pub(crate) async fn authenticated_host(
-    app: &crate::AppHandle,
+    _app: &crate::AppHandle,
     port: u16,
-) -> Result<tauri_runtime_electron::AuthenticatedWebHost, String> {
+) -> Result<AuthenticatedWebHost, String> {
     let instance = super::instances::instance();
     let launch = launch_url(port)?;
     let mut cached = instance.authenticated_host.lock().await;
@@ -52,11 +117,7 @@ pub(crate) async fn authenticated_host(
     {
         return Ok(host.clone());
     }
-    let client = app
-        .state::<tauri_runtime_electron::ElectronClient>()
-        .inner()
-        .clone();
-    let host = tauri_runtime_electron::authenticate_web_host(&client, &launch)
+    let host = exchange_launch_url(&launch)
         .await
         .map_err(|error| format!("HARNESS_AUTH_FAILED: {error}"))?;
     if launch_url(port)? != launch {
@@ -80,6 +141,14 @@ mod tests {
             "dsh web: http://127.0.0.1:3080/api/?token=secret",
         ] {
             assert_eq!(launch_url_in(line, 3080), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn launch_url_rejects_ambiguous_token_parameters() {
+        for query in ["token=first&token=second", "token=&token=valid", "token=valid&token="] {
+            let line = format!("dsh web: http://127.0.0.1:3080/?{query}");
+            assert_eq!(launch_url_in(&line, 3080), None);
         }
     }
 

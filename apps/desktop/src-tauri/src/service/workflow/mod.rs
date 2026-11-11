@@ -31,7 +31,7 @@ pub use health::{proxy_health_check, recheck_ownership, HealthCheck};
 pub(crate) use heap::effective_heap_limit_mb;
 pub use install::install;
 pub use launch::{launch, restart, start};
-pub(crate) use runtime::electron_executable;
+pub(crate) use runtime::node_executable;
 #[cfg(test)]
 pub(crate) use runtime::test_runtime_executable;
 pub use process::{

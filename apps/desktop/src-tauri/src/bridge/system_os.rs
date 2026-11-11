@@ -8,7 +8,6 @@ use crate::config;
 use crate::logger;
 use crate::service::{core, plugin, profile};
 use crate::AppHandle;
-use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 /// 健康检查（通过 Rust 代理，避免 WebView CORS 问题）
@@ -106,7 +105,7 @@ pub async fn copy_service_url(
 #[tauri::command]
 pub async fn open_in_app(
     webview: crate::Webview,
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
     path: Option<String>,
 ) -> Result<(), String> {
     if !webview.label().starts_with("harness-") {

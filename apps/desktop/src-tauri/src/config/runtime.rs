@@ -42,6 +42,7 @@ pub(crate) fn base_dir_from(app_data: impl FnOnce() -> PathBuf) -> PathBuf {
 ///
 /// 仅用于启动时清理：dsh 与 pnpm 已改为以随包 Electron 的 Node 模式运行，这个
 /// 目录只可能是历史安装留下的残留。
+#[allow(dead_code)]
 pub fn legacy_node_root<R: Runtime>(app_handle: &AppHandle<R>) -> PathBuf {
     get_base_dir(app_handle).join(LEGACY_NODE_ROOT_DIR)
 }
@@ -219,13 +220,8 @@ pub fn get_node_version_of_path(node: &Path) -> Option<String> {
     cached_node_version(node, &NODE_VERSION_CACHE, || probe_node_version(node))
 }
 
-/// 运行 dsh/pnpm 的唯一运行时：随包分发的 Electron（`ELECTRON_RUN_AS_NODE=1`）。
-///
-/// 拉起进程一律经 [`crate::service::workflow::launch::node_command`]，它由
-/// `ElectronClient` 给出同一个二进制并已带好 Node 模式环境；本函数只服务需要
-/// 提前知道路径的场景（CLI shim 烘焙、诊断展示）。
 pub fn node_executable<R: Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, String> {
-    crate::service::workflow::electron_executable(app_handle)
+    crate::service::workflow::node_executable(app_handle)
 }
 
 /// Harness 发行版安装目录

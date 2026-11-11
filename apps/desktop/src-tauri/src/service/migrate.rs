@@ -16,6 +16,7 @@ use std::fs;
 use std::path::Path;
 
 /// 旧版独立 Node 运行时在依赖映射表里的键名。
+#[allow(dead_code)]
 const LEGACY_NODE_MAPPING_KEY: &str = "node";
 
 /// 清除 `root` 下携带过来的 pnpm 安装元数据（`node_modules/.modules.yaml`）。
@@ -64,6 +65,7 @@ pub(crate) fn purge_carried_pnpm_metadata(root: &Path) {
 ///
 /// 同时把映射表里的 `node` 记录一并清掉：映射值会让解析链把该槽位当作「已 pin」，
 /// 目录删掉后记录悬空反而更容易误导后续诊断。幂等、best-effort，仅告警不阻断启动。
+#[allow(dead_code)]
 pub fn remove_legacy_node_runtime(app_handle: &crate::AppHandle) -> Result<(), String> {
     let legacy = crate::config::legacy_node_root(app_handle);
     let mut failures = Vec::new();

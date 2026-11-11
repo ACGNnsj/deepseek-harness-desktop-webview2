@@ -191,7 +191,7 @@ pub fn write_shims<R: Runtime>(app_handle: &AppHandle<R>, bin_dir: &Path) -> Res
 
 /// [`write_shims`] 的可注入版本：路径由调用方给定。
 ///
-/// 生产入口从 `ElectronClient` 解析运行时，而单元测试没有该状态；测试需要验证
+/// 生产入口解析系统或捆绑的 Node 运行时，而单元测试没有该状态；测试需要验证
 /// 「落盘编排是否接线」，因此把路径解析与落盘拆开。
 pub fn write_shims_at(bin_dir: &Path, paths: &ShimPaths, dsh_home: &Path) -> Result<(), String> {
     fs::create_dir_all(bin_dir)

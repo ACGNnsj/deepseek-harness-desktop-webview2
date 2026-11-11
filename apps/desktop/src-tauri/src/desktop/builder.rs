@@ -61,12 +61,6 @@ pub fn setup(app_handle: crate::AppHandle) {
 
     crate::service::workflow::sweep_orphan_harness(&app_handle);
 
-    // 独立 Node 运行时已废弃：清掉历史安装留下的 `$AppData/runtime`，避免它以
-    // 陈旧文件继续被诊断信息或用户误认为有效运行时。
-    if let Err(e) = crate::service::migrate::remove_legacy_node_runtime(&app_handle) {
-        log::warn!("legacy node runtime cleanup skipped: {e}");
-    }
-
     let dsh_home = crate::config::get_dsh_data_path(&app_handle);
     if let Err(e) = crate::service::migrate::heal_stale_pnpm_metadata(&dsh_home) {
         log::warn!("pnpm modules metadata self-heal skipped: {e}");
@@ -863,6 +857,10 @@ pub fn build_main_window(
     let webview_builder = with_shell_chrome(app, webview_builder)?;
 
     let webview_window = webview_builder
+        .on_new_window(move |url, _| {
+            crate::desktop::window::on_new_window(app_handle.clone(), url);
+            tauri::webview::NewWindowResponse::Deny
+        })
         .on_download(crate::desktop::window::on_download)
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Microphone => tauri::webview::PermissionResponse::Allow,
@@ -934,6 +932,10 @@ pub fn build_shell_window(
     };
 
     let window = webview_builder
+        .on_new_window(move |url, _| {
+            crate::desktop::window::on_new_window(app_handle.clone(), url);
+            tauri::webview::NewWindowResponse::Deny
+        })
         .on_download(crate::desktop::window::on_download)
         .on_permission_request(|_, kind| match kind {
             tauri::webview::PermissionKind::Microphone => tauri::webview::PermissionResponse::Allow,

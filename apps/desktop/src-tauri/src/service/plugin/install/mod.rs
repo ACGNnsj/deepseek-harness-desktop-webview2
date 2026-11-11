@@ -383,7 +383,7 @@ async fn install_with_guard(
     // 确保 pnpm/dsh shim 存在
     cli::ensure_shims(app_handle)?;
 
-    let node = crate::service::workflow::electron_executable(app_handle)?;
+    let node = crate::service::workflow::node_executable(app_handle)?;
     // 活动核心的 dsh 入口：本地核心存在时用本地 CLI，否则预打包
     let dsh_bin = core::active_dsh_binary(app_handle);
     if !node.exists() {
@@ -677,7 +677,7 @@ pub async fn allow_version_exemptions(
     let _operation = acquire_operation_lock().await?;
     let window = crate::utils::operation_window(app_handle)
         .ok_or("WINDOW_NOT_FOUND: current profile window missing")?;
-    let node = crate::service::workflow::electron_executable(app_handle)?;
+    let node = crate::service::workflow::node_executable(app_handle)?;
     let dsh_bin = core::active_dsh_binary(app_handle);
     if !node.exists() {
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());

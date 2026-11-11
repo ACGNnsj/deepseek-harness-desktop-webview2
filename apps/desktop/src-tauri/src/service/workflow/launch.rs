@@ -817,7 +817,7 @@ pub(super) async fn launch_prepared(
     // dunce::canonicalize 而不是 std::fs::canonicalize：后者在 Windows 上会
     // 返回 `\\?\` verbatim 前缀，cmd.exe 无法直接启动这种路径，导致 pnpm/dsh
     // shim 报 "The system cannot find the path specified."。
-    let node_abs = dunce::canonicalize(super::electron_executable(
+    let node_abs = dunce::canonicalize(super::node_executable(
         notifications
             .get()
             .ok_or("APP_HANDLE_UNAVAILABLE: launch handle was not set")?,
@@ -836,7 +836,7 @@ pub(super) async fn launch_prepared(
     //
     // `DSH_ELECTRON_PATH` 专门表达这件事：值就是桌面端自己启动 GUI 的同一个二进制，
     // 插件拉起窗口时直接用它、并自行移除 `ELECTRON_RUN_AS_NODE` 即可。与 `DSH_NODE`
-    // 同源（同一个 `electron_executable` 结果），不引入第二套路径解析。
+    // 同源（同一个 `node_executable` 结果），不引入第二套路径解析。
     envs.insert(
         "DSH_ELECTRON_PATH".to_string(),
         node_abs.to_string_lossy().into_owned(),

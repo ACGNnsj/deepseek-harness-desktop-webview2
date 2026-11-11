@@ -42,6 +42,7 @@ pub(crate) fn authenticated_session_key(profile: &str, label: &str) -> String {
 }
 
 /// 窗口自己那个 webview 的持久分区 key（宿主窗口即 DSH 页面本身时使用）。
+#[allow(dead_code)]
 pub(crate) fn window_authenticated_session_key<R: tauri::Runtime>(
     app: &crate::AppHandle<R>,
     label: &str,

@@ -590,7 +590,7 @@ async fn run_plugin_command(
 
     cli::ensure_shims(app_handle)?;
 
-    let node = crate::service::workflow::electron_executable(app_handle)?;
+    let node = crate::service::workflow::node_executable(app_handle)?;
     let dsh_bin = core::active_dsh_binary(app_handle);
     if !node.exists() {
         return Err("NODE_NOT_FOUND: Node.js runtime missing".to_string());

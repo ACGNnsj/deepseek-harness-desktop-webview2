@@ -4,6 +4,7 @@ use std::time::Duration;
 ///
 /// 仅用于启动时清理历史安装：dsh 与 pnpm 现在一律以随包 Electron 的 Node 模式
 /// 运行，不再下载、安装或解析独立 Node。
+#[allow(dead_code)]
 pub const LEGACY_NODE_ROOT_DIR: &str = "runtime";
 
 /// 打包的 DeepSeek Harness 发行版下载地址（GitHub Release，默认首选源）
