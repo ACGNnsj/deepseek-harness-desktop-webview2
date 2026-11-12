@@ -24,7 +24,7 @@ export function HarnessContent({ srcOverride = null, borderTint = null }: Harnes
         >
           <If
             cond={src !== ''}
-            then={<iframe src={src} title="Harness" className="h-full w-full border-0" data-testid="dsh-harness-webview" />}
+            then={<webview src={src} className="h-full w-full" data-testid="dsh-harness-webview" />}
           />
         </div>
       )}
