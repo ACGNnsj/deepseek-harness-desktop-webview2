@@ -440,13 +440,20 @@ pub(crate) fn user_home_dir() -> Option<PathBuf> {
 /// - debug 构建始终使用 `~/.dsh.dev`，忽略从旧 desktop checkout、终端或 release
 ///   shim 继承的 `DSH_HOME`，避免两个构建误用同一 profile 并发改写；
 /// - debug 子进程由 launch 显式收到同一个 `~/.dsh.dev`，开发版与生产版的会话、档案、
-///   插件与主题因此互不干扰。
+///   插件与主题因此互不干扰；
+/// - 例外：debug 构建可用 `DSH_DEV_HOME` 显式指定别的数据目录（拿真实档案做联调时用），
+///   不设则仍固定 `~/.dsh.dev`，正常开发不会误撞生产 profile。
 pub fn get_dsh_data_path<R: Runtime>(_app_handle: &AppHandle<R>) -> PathBuf {
     dsh_data_path_from_env()
 }
 
 pub(crate) fn dsh_data_path_from_env() -> PathBuf {
     let dir_name = if cfg!(debug_assertions) {
+        if let Some(home) = std::env::var_os("DSH_DEV_HOME")
+            && !home.is_empty()
+        {
+            return PathBuf::from(home);
+        }
         DSH_HOME_DEV_DIR_NAME
     } else {
         if let Some(home) = std::env::var_os("DSH_HOME")
