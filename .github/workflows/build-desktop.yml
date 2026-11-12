@@ -9,8 +9,14 @@ on:
         type: string
         default: ''
   push:
-    tags:
-      - 'v*'
+    branches: [experiment-webview2]
+    paths:
+      - 'apps/desktop/**'
+      - 'crates/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/build-desktop.yml'
 
 permissions:
   contents: read
