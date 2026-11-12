@@ -826,8 +826,18 @@ fn harness_capability(label: &str, url: &Url) -> Result<serde_json::Value, Strin
     capability["local"] = false.into();
     capability["windows"] = serde_json::json!([]);
     capability["webviews"] = serde_json::json!([label]);
-    capability["remote"] =
-        serde_json::json!({"urls": [format!("{}/*", url.origin().ascii_serialization())]});
+    let hosted: serde_json::Value =
+        serde_json::from_str(include_str!("../../capabilities/hosted-shell.json"))
+            .map_err(|error| error.to_string())?;
+    let mut urls = hosted["remote"]["urls"]
+        .as_array()
+        .cloned()
+        .ok_or("HOSTED_SHELL_URLS_INVALID")?;
+    let origin = format!("{}/*", url.origin().ascii_serialization());
+    if !urls.iter().any(|entry| entry.as_str() == Some(origin.as_str())) {
+        urls.push(serde_json::Value::String(origin));
+    }
+    capability["remote"] = serde_json::json!({ "urls": urls });
     for permission in capability["permissions"]
         .as_array_mut()
         .ok_or("HARNESS_CAPABILITY_INVALID")?
@@ -837,6 +847,50 @@ fn harness_capability(label: &str, url: &Url) -> Result<serde_json::Value, Strin
         }
     }
     Ok(capability)
+}
+
+fn loopback_origin(url: &Url) -> Option<String> {
+    if url.scheme() != "http" {
+        return None;
+    }
+    let host = url.host_str()?;
+    let loopback = host == "localhost"
+        || host == "[::1]"
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    loopback.then(|| url.origin().ascii_serialization())
+}
+
+pub(super) fn grant_shell_origin_capability(app: &crate::AppHandle, label: &str, url: &Url) {
+    let Some(origin) = loopback_origin(url) else {
+        return;
+    };
+    let Ok(mut capability) =
+        serde_json::from_str::<serde_json::Value>(include_str!("../../capabilities/default.json"))
+    else {
+        return;
+    };
+    let identifier: String = format!("shell-origin-{label}-{origin}")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    capability["identifier"] = identifier.into();
+    capability["local"] = false.into();
+    capability["windows"] = serde_json::json!([label]);
+    capability["webviews"] = serde_json::json!([]);
+    capability["remote"] = serde_json::json!({ "urls": [format!("{origin}/*")] });
+    if let Err(error) = app.add_capability(capability.to_string()) {
+        log::debug!("[capability] shell origin grant skipped for {origin}: {error}");
+    }
 }
 
 #[tauri::command]

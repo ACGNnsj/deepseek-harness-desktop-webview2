@@ -856,7 +856,16 @@ pub fn build_main_window(
 
     let webview_builder = with_shell_chrome(app, webview_builder)?;
 
+    let navigation_app = app.clone();
     let webview_window = webview_builder
+        .on_navigation(move |url| {
+            crate::desktop::window::grant_shell_origin_capability(
+                &navigation_app,
+                MAIN_WINDOW_LABEL,
+                &url,
+            );
+            true
+        })
         .on_new_window(move |url, _| {
             crate::desktop::window::on_new_window(app_handle.clone(), url);
             tauri::webview::NewWindowResponse::Deny
