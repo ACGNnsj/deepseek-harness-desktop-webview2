@@ -9,7 +9,7 @@ on:
         type: string
         default: ''
   push:
-    branches: [experiment-webview2]
+    branches: [main]
     paths:
       - 'apps/desktop/**'
       - 'crates/**'
