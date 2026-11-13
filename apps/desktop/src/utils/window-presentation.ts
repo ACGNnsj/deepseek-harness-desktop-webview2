@@ -11,9 +11,27 @@ export function isHostedDocument(): boolean {
   return (globalThis as Record<string, unknown>)[HOSTED_GLOBAL] === true
 }
 
+/**
+ * 文档是否由 dsh 服务自身提供（http://127.0.0.1:<port>）。
+ *
+ * 壳层页永远是 tauri.localhost（打包资源），所以回环 IPv4/IPv6 主机名足以区分。
+ */
+function isHarnessOriginDocument(): boolean {
+  if (typeof location === 'undefined' || (location.protocol !== 'http:' && location.protocol !== 'https:'))
+    return false
+  return location.hostname === '127.0.0.1' || location.hostname === '[::1]'
+}
+
 export function isHostedServiceDocument(): boolean {
+  if (!isHostedDocument())
+    return false
   const boot = (globalThis as { __DSH_BOOT__?: { entries?: unknown } }).__DSH_BOOT__
-  return isHostedDocument() && Array.isArray(boot?.entries)
+  if (Array.isArray(boot?.entries))
+    return true
+  // 服务启动页（端口已就绪、真页面尚未接管）同样没有 __DSH_BOOT__，但它的文档由
+  // dsh 服务提供。若按壳层文档处理，注入进该页的启动链会再 boot() 一次，把窗口重新
+  // 导航回启动页 —— 表现为启动后每约 6 秒重载一轮的「崩溃」风暴。
+  return isHarnessOriginDocument()
 }
 
 /**

@@ -697,6 +697,11 @@ export const harness = defineStore({
 
     /** 启动流程：检测环境/安装依赖 → 拉起服务 → 已安装时后台检查更新 */
     async boot() {
+      console.warn('[Harness] boot() invoked', {
+        href: typeof location === 'undefined' ? '' : location.href,
+        hosted: isHostedDocument(),
+        hostedService: isHostedServiceDocument(),
+      })
       const token = ++bootToken
       this.resetFrontendPreload()
       if (policyApprovalKey !== undefined) {
