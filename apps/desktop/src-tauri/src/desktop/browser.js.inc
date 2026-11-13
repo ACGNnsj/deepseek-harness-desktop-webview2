@@ -1,4 +1,5 @@
 (() => {
+  if (window.self !== window.top) return
   const ipc = window.__TAURI_INTERNALS__
   const listeners = new Map()
   let subscription

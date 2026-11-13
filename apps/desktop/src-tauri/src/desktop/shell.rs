@@ -83,6 +83,7 @@ impl ShellInjection {
         let js = shell_module()?;
         let source = format!(
             r#"(() => {{
+  if (window.self !== window.top) return;
   if (!['tauri:', 'http:', 'https:'].includes(location.protocol)) return;
   globalThis.__DSH_HOSTED__ = true;
   {initial_theme}
