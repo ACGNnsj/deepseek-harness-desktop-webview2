@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop",
   "type": "module",
-  "version": "0.31.13",
+  "version": "0.31.14",
   "private": true,
   "scripts": {
     "dev": "vite",

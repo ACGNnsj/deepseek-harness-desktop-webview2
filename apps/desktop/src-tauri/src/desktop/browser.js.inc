@@ -221,4 +221,81 @@
     e.stopPropagation()
   }, true)
 
+  async function resolvePaste(event) {
+    const source = event.clipboardData
+    if (!source) return
+    const incoming = [...source.items].filter((item) => item.kind === 'file')
+    if (incoming.length === 0) return
+    const target = event.target instanceof Element ? event.target : document.body
+    const plain = source.getData('text/plain')
+    const html = source.getData('text/html')
+    const resume = (transfer) => {
+      const resumed = new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true })
+      Object.defineProperty(resumed, 'clipboardData', { value: transfer, configurable: true })
+      target.dispatchEvent(resumed)
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    let paths = []
+    try {
+      const tauri = window.__TAURI__ && window.__TAURI__.core
+      if (!tauri || typeof tauri.invoke !== 'function') throw new Error('invoke unavailable')
+      const listed = await tauri.invoke('read_clipboard_file_paths')
+      if (Array.isArray(listed)) paths = listed
+    } catch {
+      resume(source)
+      return
+    }
+    const remaining = new Map()
+    for (const entry of paths) {
+      if (!entry || typeof entry.path !== 'string' || typeof entry.name !== 'string') continue
+      const list = remaining.get(entry.name) || []
+      list.push(entry)
+      remaining.set(entry.name, list)
+    }
+    const take = (name, isDir) => {
+      const list = remaining.get(name)
+      if (!list || list.length === 0) return null
+      const at = list.findIndex((entry) => (entry.is_dir === true) === isDir)
+      if (at === -1) return null
+      const found = list.splice(at, 1)[0]
+      return found || null
+    }
+    const transfer = new DataTransfer()
+    for (const item of incoming) {
+      let file = null
+      try { file = item.getAsFile() } catch { file = null }
+      let nativeEntry = null
+      try { nativeEntry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null } catch { nativeEntry = null }
+      const isDir = nativeEntry !== null && nativeEntry.isDirectory === true
+      const name = (file && file.name) || (nativeEntry && nativeEntry.name) || ''
+      if (name === '') continue
+      const match = take(name, isDir)
+      if (isDir) {
+        if (!match || match.is_dir !== true) {
+          console.warn(`[dsh-host-paths] paste dir unresolved: ${name}`)
+          continue
+        }
+        const vessel = new File([], match.name, { type: '' })
+        dropPathByFile.set(vessel, match.path)
+        dropDirByFile.set(vessel, true)
+        transfer.items.add(vessel)
+        continue
+      }
+      if (file === null) continue
+      if (match && match.is_dir !== true) dropPathByFile.set(file, match.path)
+      transfer.items.add(file)
+    }
+    if (plain !== '') transfer.setData('text/plain', plain)
+    if (html !== '') transfer.setData('text/html', html)
+    if (transfer.files.length === 0 && plain === '' && html === '') {
+      resume(source)
+      return
+    }
+    resume(transfer)
+  }
+
+  // keep:effect paste takes over file payloads to resolve shell paths before the editor reads them
+  document.addEventListener('paste', (event) => { void resolvePaste(event) }, true)
+
 })()
