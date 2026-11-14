@@ -54,94 +54,86 @@
     },
   }
 
-  const dropFilePaths = new WeakMap()
-  const redispatchedDrops = new WeakSet()
-  let heldDrop = null
-  let pendingDropPaths = null
-  let dropSubscription
+  const dropPathByFile = new WeakMap()
+  const dropDirByFile = new WeakMap()
 
-  function linkDropPaths() {
-    if (heldDrop === null || pendingDropPaths === null) return false
-    if (Date.now() - heldDrop.at > 2000 || Date.now() - pendingDropPaths.at > 2000) return false
-    const count = Math.min(heldDrop.files.length, pendingDropPaths.paths.length)
-    for (let index = 0; index < count; index += 1) {
-      dropFilePaths.set(heldDrop.files[index], pendingDropPaths.paths[index])
-    }
-    return true
+  function mimeOf(name) {
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
+    if (ext === 'png') return 'image/png'
+    if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+    if (ext === 'gif') return 'image/gif'
+    if (ext === 'webp') return 'image/webp'
+    if (ext === 'svg') return 'image/svg+xml'
+    if (ext === 'bmp') return 'image/bmp'
+    if (ext === 'ico') return 'image/x-icon'
+    if (ext === 'avif') return 'image/avif'
+    return ''
   }
 
-  function releaseDrop() {
-    const held = heldDrop
-    heldDrop = null
-    if (held === null || redispatchedDrops.has(held.event)) return
-    redispatchedDrops.add(held.event)
-    const target = held.target.isConnected ? held.target : document
-    target.dispatchEvent(held.event)
-  }
-
-  function settleDropPaths() {
-    if (heldDrop !== null && linkDropPaths()) releaseDrop()
-  }
-
-  function watchDropPaths() {
-    if (!dropSubscription) {
-      const handler = ipc.transformCallback((event) => {
-        const payload = event && event.payload
-        if (payload && payload.type === 'drop' && Array.isArray(payload.paths)) {
-          console.info(`[dsh-host-paths] shell drop paths: ${payload.paths.length}`)
-          pendingDropPaths = { at: Date.now(), paths: payload.paths }
-          settleDropPaths()
+  function bridgeEntries() {
+    try {
+      const proto = window.DataTransferItem && DataTransferItem.prototype
+      const original = proto && proto.webkitGetAsEntry
+      if (proto && typeof original === 'function' && !proto.__dshEntryBridge) {
+        proto.__dshEntryBridge = true
+        proto.webkitGetAsEntry = function () {
+          const file = typeof this.getAsFile === 'function' ? this.getAsFile() : null
+          if (file && dropDirByFile.has(file)) return { isDirectory: true }
+          return original.call(this)
         }
-      })
-      dropSubscription = ipc.invoke('plugin:event|listen', {
-        event: 'tauri://drag-drop',
-        target: { kind: 'Webview', label: ipc.metadata.currentWebview.label },
-        handler,
-      }).catch(() => {
-        ipc.unregisterCallback(handler)
-        dropSubscription = undefined
-      })
+      }
+      const probe = new DataTransfer()
+      const probeFile = new File([], 'probe')
+      dropDirByFile.set(probeFile, true)
+      probe.items.add(probeFile)
+      const passed = probe.items[0].webkitGetAsEntry()?.isDirectory === true
+      dropDirByFile.delete(probeFile)
+      console.warn(`[dsh-host-paths] entry bridge ${passed ? 'ready' : 'unavailable'}`)
+    } catch {
+      console.warn('[dsh-host-paths] entry bridge failed')
     }
-    return dropSubscription
   }
 
-  window.addEventListener('drop', (event) => {
-    if (redispatchedDrops.has(event)) return
-    const transfer = event && event.dataTransfer
-    const types = (transfer && transfer.types) || []
-    if (!transfer || !types.includes('Files')) return
-    if (heldDrop !== null) releaseDrop()
-    watchDropPaths()
-    heldDrop = { at: Date.now(), files: [...transfer.files], event, target: event.target }
-    console.info(`[dsh-host-paths] dom drop files: ${heldDrop.files.length}`)
-    if (linkDropPaths()) {
-      heldDrop = null
-      return
-    }
-    event.preventDefault()
-    event.stopPropagation()
-    const waitStart = Date.now()
-    const pump = () => {
-      if (heldDrop === null) return
-      if (linkDropPaths()) {
-        releaseDrop()
-        return
+  window.__dshShellDropAnnounce = async (items) => {
+    if (!Array.isArray(items) || items.length === 0) return
+    console.warn(`[dsh-host-paths] shell drop: ${items.length}`)
+    const transfer = new DataTransfer()
+    for (const item of items) {
+      if (!item || typeof item.path !== 'string') continue
+      const name = item.path.split(/[/\\]/).pop() || item.path
+      if (item.isDir) {
+        const file = new File([], name, { type: '' })
+        dropPathByFile.set(file, item.path)
+        dropDirByFile.set(file, true)
+        transfer.items.add(file)
+        continue
       }
-      if (Date.now() - waitStart > 800) {
-        console.info('[dsh-host-paths] drop released without shell paths')
-        releaseDrop()
-        return
+      const type = mimeOf(name)
+      if (type.startsWith('image/')) {
+        try {
+          const response = await fetch(`http://asset.localhost/${encodeURIComponent(item.path)}`)
+          if (!response.ok) throw new Error(String(response.status))
+          const blob = await response.blob()
+          transfer.items.add(new File([blob], name, { type: blob.type || type }))
+        } catch {
+          console.warn(`[dsh-host-paths] image skipped: ${name}`)
+        }
+        continue
       }
-      setTimeout(pump, 50)
+      const file = new File([], name, { type })
+      dropPathByFile.set(file, item.path)
+      transfer.items.add(file)
     }
-    setTimeout(pump, 50)
-  }, true)
+    if (transfer.files.length === 0) return
+    document.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true }))
+    console.warn(`[dsh-host-paths] synthetic drop: ${transfer.files.length}`)
+  }
 
-  watchDropPaths()
+  bridgeEntries()
 
   window.__DSH_HOST_PATHS__ = {
     pathFor(file) {
-      return dropFilePaths.get(file) ?? ''
+      return dropPathByFile.get(file) ?? ''
     },
   }
 })()

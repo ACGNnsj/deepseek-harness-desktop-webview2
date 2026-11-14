@@ -1606,6 +1606,33 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             #[cfg(target_os = "macos")]
             tauri::WindowEvent::Focused(true) => sync_macos_fullscreen_menu(window),
             _ => {}
+        })
+        .on_webview_event(|webview, event| {
+            let tauri::WebviewEvent::DragDrop(event) = event else {
+                return;
+            };
+            let tauri::DragDropEvent::Drop { paths, .. } = event else {
+                return;
+            };
+            if !webview.label().starts_with("harness-") {
+                return;
+            }
+            let items: Vec<serde_json::Value> = paths
+                .iter()
+                .map(|path| {
+                    serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "isDir": path.is_dir(),
+                    })
+                })
+                .collect();
+            let script = format!(
+                "window.__dshShellDropAnnounce && window.__dshShellDropAnnounce({})",
+                serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string())
+            );
+            if let Err(error) = webview.eval(script) {
+                log::warn!("[drop] announce failed: {error}");
+            }
         });
 
     #[cfg(all(not(windows), not(debug_assertions)))]
