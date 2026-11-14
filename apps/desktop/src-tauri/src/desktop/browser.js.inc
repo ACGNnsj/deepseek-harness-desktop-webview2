@@ -53,4 +53,65 @@
       },
     },
   }
+
+  const dropFilePaths = new WeakMap()
+  let pendingDrop = null
+  let pendingDropPaths = null
+  let dropSubscription
+
+  function linkDropPaths() {
+    if (pendingDrop === null || pendingDropPaths === null) return
+    if (Date.now() - pendingDrop.at > 2000 || Date.now() - pendingDropPaths.at > 2000) {
+      pendingDrop = null
+      return
+    }
+    const count = Math.min(pendingDrop.files.length, pendingDropPaths.paths.length)
+    for (let index = 0; index < count; index += 1) {
+      dropFilePaths.set(pendingDrop.files[index], pendingDropPaths.paths[index])
+    }
+    pendingDrop = null
+  }
+
+  function watchDropPaths() {
+    if (!dropSubscription) {
+      const handler = ipc.transformCallback((event) => {
+        const payload = event && event.payload
+        if (payload && payload.type === 'drop' && Array.isArray(payload.paths)) {
+          pendingDropPaths = { at: Date.now(), paths: payload.paths }
+          linkDropPaths()
+        }
+      })
+      dropSubscription = ipc.invoke('plugin:event|listen', {
+        event: 'tauri://drag-drop',
+        target: { kind: 'Webview', label: ipc.metadata.currentWebview.label },
+        handler,
+      }).catch(() => {
+        ipc.unregisterCallback(handler)
+        dropSubscription = undefined
+      })
+    }
+    return dropSubscription
+  }
+
+  window.addEventListener('drop', (event) => {
+    const transfer = event && event.dataTransfer
+    if (transfer && transfer.types.includes('Files')) {
+      pendingDrop = { at: Date.now(), files: [...transfer.files] }
+      watchDropPaths()
+      linkDropPaths()
+      if (pendingDrop !== null) {
+        console.debug('[dsh-host-paths] drop without fresh shell paths')
+      }
+    } else {
+      pendingDrop = null
+    }
+  }, true)
+
+  watchDropPaths()
+
+  window.__DSH_HOST_PATHS__ = {
+    pathFor(file) {
+      return dropFilePaths.get(file) ?? ''
+    },
+  }
 })()
