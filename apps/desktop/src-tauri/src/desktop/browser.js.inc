@@ -256,9 +256,9 @@
     }
     let paths = []
     try {
-      const tauri = window.__TAURI__ && window.__TAURI__.core
-      if (!tauri || typeof tauri.invoke !== 'function') throw new Error('invoke unavailable')
-      const listed = await tauri.invoke('read_clipboard_file_paths')
+      const internals = window.__TAURI_INTERNALS__
+      if (!internals || typeof internals.invoke !== 'function') throw new Error('invoke unavailable')
+      const listed = await internals.invoke('read_clipboard_file_paths')
       if (Array.isArray(listed)) paths = listed
     } catch (error) {
       console.warn(`[dsh-host-paths] clipboard paths unavailable: ${error}`)
