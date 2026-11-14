@@ -1364,6 +1364,7 @@ pub fn handler() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         crate::bridge::open_in_app,
         crate::bridge::read_clipboard_text,
         crate::bridge::read_clipboard_file_paths,
+        crate::bridge::read_dropped_file_bytes,
         crate::bridge::write_clipboard_text,
         crate::desktop::window::create_app_window,
         crate::desktop::builder::sync_view_menu,

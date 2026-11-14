@@ -111,12 +111,16 @@
       const type = mimeOf(name)
       if (type.startsWith('image/')) {
         try {
-          const response = await fetch(`http://asset.localhost/${encodeURIComponent(item.path)}`)
-          if (!response.ok) throw new Error(String(response.status))
-          const blob = await response.blob()
-          transfer.items.add(new File([blob], name, { type: blob.type || type }))
-        } catch {
-          console.warn(`[dsh-host-paths] image skipped: ${name}`)
+          const internals = window.__TAURI_INTERNALS__
+          if (!internals || typeof internals.invoke !== 'function') throw new Error('invoke unavailable')
+          const encoded = await internals.invoke('read_dropped_file_bytes', { path: item.path })
+          if (typeof encoded !== 'string' || encoded === '') throw new Error('empty bytes')
+          const binary = atob(encoded)
+          const bytes = new Uint8Array(binary.length)
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+          transfer.items.add(new File([bytes], name, { type }))
+        } catch (error) {
+          console.warn(`[dsh-host-paths] image skipped: ${name} (${error})`)
         }
         continue
       }
