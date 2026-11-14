@@ -221,7 +221,9 @@
     e.stopPropagation()
   }, true)
 
+  let firingSyntheticPaste = false
   async function resolvePaste(event) {
+    if (firingSyntheticPaste) return
     const source = event.clipboardData
     if (!source) return
     const incoming = [...source.items].filter((item) => item.kind === 'file')
@@ -246,7 +248,8 @@
     const resume = (transfer) => {
       const resumed = new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true })
       Object.defineProperty(resumed, 'clipboardData', { value: transfer, configurable: true })
-      target.dispatchEvent(resumed)
+      firingSyntheticPaste = true
+      try { target.dispatchEvent(resumed) } finally { firingSyntheticPaste = false }
     }
     event.preventDefault()
     event.stopPropagation()
@@ -276,26 +279,26 @@
     const take = (name, isDir) => {
       const list = remaining.get(name)
       if (!list || list.length === 0) return null
-      const at = list.findIndex((entry) => (entry.is_dir === true) === isDir)
-      if (at === -1) return null
+      let at = list.findIndex((entry) => (entry.is_dir === true) === isDir)
+      if (at === -1) at = 0
       const found = list.splice(at, 1)[0]
       return found || null
     }
     const transfer = new DataTransfer()
     for (const snap of snaps) {
       const match = take(snap.name, snap.isDir)
-      if (snap.isDir) {
-        if (!match || match.is_dir !== true) {
-          console.warn(`[dsh-host-paths] paste dir unresolved: ${snap.name}`)
-          continue
-        }
+      if (match && match.is_dir === true) {
         const vessel = new File([], match.name, { type: '' })
         dropPathByFile.set(vessel, match.path)
         dropDirByFile.set(vessel, true)
         transfer.items.add(vessel)
         continue
       }
-      if (match && match.is_dir !== true) dropPathByFile.set(snap.file, match.path)
+      if (snap.file === null) {
+        console.warn(`[dsh-host-paths] paste file unresolved: ${snap.name}`)
+        continue
+      }
+      if (match) dropPathByFile.set(snap.file, match.path)
       transfer.items.add(snap.file)
     }
     if (plain !== '') transfer.setData('text/plain', plain)
