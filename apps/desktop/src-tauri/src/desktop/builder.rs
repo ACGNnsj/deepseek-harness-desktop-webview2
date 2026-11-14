@@ -1614,9 +1614,17 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
             let tauri::DragDropEvent::Drop { paths, .. } = event else {
                 return;
             };
-            if !webview.label().starts_with("harness-") {
+            let loopback = webview
+                .url()
+                .map(|url| match url.host_str() {
+                    Some("127.0.0.1") | Some("[::1]") | Some("localhost") => true,
+                    _ => false,
+                })
+                .unwrap_or(false);
+            if !loopback {
                 return;
             }
+            log::warn!("[drop] shell drop: {} paths", paths.len());
             let items: Vec<serde_json::Value> = paths
                 .iter()
                 .map(|path| {
