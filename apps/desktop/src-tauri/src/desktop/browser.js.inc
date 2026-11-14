@@ -260,7 +260,8 @@
       if (!tauri || typeof tauri.invoke !== 'function') throw new Error('invoke unavailable')
       const listed = await tauri.invoke('read_clipboard_file_paths')
       if (Array.isArray(listed)) paths = listed
-    } catch {
+    } catch (error) {
+      console.warn(`[dsh-host-paths] clipboard paths unavailable: ${error}`)
       resume(source)
       return
     }
