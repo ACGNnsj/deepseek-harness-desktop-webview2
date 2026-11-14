@@ -136,4 +136,89 @@
       return dropPathByFile.get(file) ?? ''
     },
   }
+  const ROW_KEY_ATTR = 'data-row-key'
+  const POINTER_DRAG_PX = 6
+  let rowFlight = null
+  let suppressRowClick = false
+  let firingSyntheticDrag = false
+
+  function asDragRow(element) {
+    const row = element instanceof Element ? element.closest(`[${ROW_KEY_ATTR}]`) : null
+    if (row === null) return null
+    const key = row.getAttribute(ROW_KEY_ATTR) ?? ''
+    if (!key.startsWith('workspace:') && !key.startsWith('session:')) return null
+    if (row.getAttribute('draggable') !== 'true') return null
+    return row
+  }
+
+  function fireRowDrag(type, row, clientX, clientY, transfer) {
+    const event = new DragEvent(type, { bubbles: true, cancelable: true, clientX, clientY })
+    Object.defineProperty(event, 'dataTransfer', { value: transfer, configurable: true })
+    firingSyntheticDrag = true
+    try { row.dispatchEvent(event) } finally { firingSyntheticDrag = false }
+  }
+
+  function endRowFlight(target, suppress) {
+    const flight = rowFlight
+    rowFlight = null
+    document.documentElement.style.userSelect = ''
+    document.documentElement.style.cursor = ''
+    if (flight === null || flight.transfer === null) return
+    if (suppress) suppressRowClick = true
+    if (target !== null) fireRowDrag('drop', target, flight.lastX, flight.lastY, flight.transfer)
+    fireRowDrag('dragend', flight.source, flight.lastX, flight.lastY, flight.transfer)
+  }
+
+  // keep:effect sidebar pointer-drag flight replaces the dead native loop with synthetic DnD
+  document.addEventListener('pointerdown', (e) => {
+    suppressRowClick = false
+    if (e.button !== 0 || !e.isPrimary || e.pointerType !== 'mouse') return
+    const target = e.target instanceof Element ? e.target : null
+    if (target === null || target.closest('button, a, input, textarea, select, [role="menu"], [role="menuitem"], [contenteditable="true"]') !== null) return
+    const row = asDragRow(target)
+    if (row === null) return
+    rowFlight = { source: row, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, transfer: null }
+  })
+
+  window.addEventListener('pointermove', (e) => {
+    if (rowFlight === null || !e.isPrimary) return
+    rowFlight.lastX = e.clientX
+    rowFlight.lastY = e.clientY
+    if (Math.hypot(e.clientX - rowFlight.startX, e.clientY - rowFlight.startY) <= POINTER_DRAG_PX) return
+    if (rowFlight.transfer === null) {
+      rowFlight.transfer = new DataTransfer()
+      document.documentElement.style.userSelect = 'none'
+      document.documentElement.style.cursor = 'grabbing'
+      fireRowDrag('dragstart', rowFlight.source, e.clientX, e.clientY, rowFlight.transfer)
+    }
+    const row = asDragRow(document.elementFromPoint(e.clientX, e.clientY))
+    if (row !== null) fireRowDrag('dragover', row, e.clientX, e.clientY, rowFlight.transfer)
+  })
+
+  window.addEventListener('pointerup', (e) => {
+    if (rowFlight === null || !e.isPrimary) return
+    rowFlight.lastX = e.clientX
+    rowFlight.lastY = e.clientY
+    endRowFlight(asDragRow(document.elementFromPoint(e.clientX, e.clientY)), true)
+  })
+
+  window.addEventListener('pointercancel', () => { endRowFlight(null, false) })
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') endRowFlight(null, false)
+  })
+
+  document.addEventListener('click', (e) => {
+    if (!suppressRowClick) return
+    suppressRowClick = false
+    e.preventDefault()
+    e.stopPropagation()
+  }, true)
+
+  document.addEventListener('dragstart', (e) => {
+    if (firingSyntheticDrag || asDragRow(e.target) === null) return
+    e.preventDefault()
+    e.stopPropagation()
+  }, true)
+
 })()
