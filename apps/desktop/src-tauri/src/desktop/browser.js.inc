@@ -226,9 +226,23 @@
     if (!source) return
     const incoming = [...source.items].filter((item) => item.kind === 'file')
     if (incoming.length === 0) return
+    const snaps = []
+    for (const item of incoming) {
+      let file = null
+      try { file = item.getAsFile() } catch { file = null }
+      let nativeEntry = null
+      try { nativeEntry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null } catch { nativeEntry = null }
+      const isDir = nativeEntry !== null && nativeEntry.isDirectory === true
+      const name = (file && file.name) || (nativeEntry && nativeEntry.name) || ''
+      if (name === '') continue
+      if (file === null && !isDir) continue
+      snaps.push({ file, name, isDir })
+    }
     const target = event.target instanceof Element ? event.target : document.body
-    const plain = source.getData('text/plain')
-    const html = source.getData('text/html')
+    let plain = ''
+    let html = ''
+    try { plain = source.getData('text/plain') } catch { plain = '' }
+    try { html = source.getData('text/html') } catch { html = '' }
     const resume = (transfer) => {
       const resumed = new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true })
       Object.defineProperty(resumed, 'clipboardData', { value: transfer, configurable: true })
@@ -236,6 +250,10 @@
     }
     event.preventDefault()
     event.stopPropagation()
+    if (snaps.length === 0) {
+      resume(source)
+      return
+    }
     let paths = []
     try {
       const tauri = window.__TAURI__ && window.__TAURI__.core
@@ -246,6 +264,7 @@
       resume(source)
       return
     }
+    console.info(`[dsh-host-paths] paste snaps=${snaps.length} paths=${paths.length}`)
     const remaining = new Map()
     for (const entry of paths) {
       if (!entry || typeof entry.path !== 'string' || typeof entry.name !== 'string') continue
@@ -262,18 +281,11 @@
       return found || null
     }
     const transfer = new DataTransfer()
-    for (const item of incoming) {
-      let file = null
-      try { file = item.getAsFile() } catch { file = null }
-      let nativeEntry = null
-      try { nativeEntry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null } catch { nativeEntry = null }
-      const isDir = nativeEntry !== null && nativeEntry.isDirectory === true
-      const name = (file && file.name) || (nativeEntry && nativeEntry.name) || ''
-      if (name === '') continue
-      const match = take(name, isDir)
-      if (isDir) {
+    for (const snap of snaps) {
+      const match = take(snap.name, snap.isDir)
+      if (snap.isDir) {
         if (!match || match.is_dir !== true) {
-          console.warn(`[dsh-host-paths] paste dir unresolved: ${name}`)
+          console.warn(`[dsh-host-paths] paste dir unresolved: ${snap.name}`)
           continue
         }
         const vessel = new File([], match.name, { type: '' })
@@ -282,9 +294,8 @@
         transfer.items.add(vessel)
         continue
       }
-      if (file === null) continue
-      if (match && match.is_dir !== true) dropPathByFile.set(file, match.path)
-      transfer.items.add(file)
+      if (match && match.is_dir !== true) dropPathByFile.set(snap.file, match.path)
+      transfer.items.add(snap.file)
     }
     if (plain !== '') transfer.setData('text/plain', plain)
     if (html !== '') transfer.setData('text/html', html)
@@ -294,7 +305,6 @@
     }
     resume(transfer)
   }
-
   // keep:effect paste takes over file payloads to resolve shell paths before the editor reads them
   document.addEventListener('paste', (event) => { void resolvePaste(event) }, true)
 
