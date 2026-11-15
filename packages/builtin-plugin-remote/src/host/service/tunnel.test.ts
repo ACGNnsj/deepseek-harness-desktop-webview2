@@ -218,6 +218,21 @@ describe('cloudflared 异常退出后的自愈', () => {
     expect((await tunnel.status()).state).toBe('error')
   })
 
+  it('具名隧道连上边缘后转为就绪并给出配置的域名链接', async () => {
+    host.document = {
+      ...host.document,
+      tunnel: { enabled: true, mode: 'token', token: 'secret-token', hostname: 'dsh.example.com' },
+    }
+    const { tunnel } = await import('./tunnel')
+    await tunnel.start('token', 'secret-token', 'dsh.example.com')
+    await flush()
+    handlers?.onLine('INF Registered tunnel connection connIndex=0')
+    await flush()
+    const status = await tunnel.status()
+    expect(status.state).toBe('running')
+    expect(status.url).toBe('https://dsh.example.com')
+  })
+
   it('用户显式 stop 打断等待中的重试', async () => {
     const { tunnel } = await import('./tunnel')
     await startRunning(tunnel)

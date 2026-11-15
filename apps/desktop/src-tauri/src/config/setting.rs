@@ -337,11 +337,18 @@ fn write_store_dat_setting<R: Runtime>(
         .map_err(|error| format!("SETTING_STORE_UNAVAILABLE: {error}"))?;
     let value =
         serde_json::to_value(setting).map_err(|error| format!("SETTING_SERIALIZE: {error}"))?;
+    // save 失败时内存里已经是新值：先恢复旧值，否则后续读取会拿到这次没落盘的迁移。
+    let previous = store.get(STORE_SETTING_KEY);
     store.set(STORE_SETTING_KEY, value.clone());
-    // 保存失败必须让调用方看得见：迁移这类流程要靠这个错误回滚，panic 会把回滚路径一起带走。
-    store
-        .save()
-        .map_err(|error| format!("SETTING_SAVE_FAILED: {error}"))?;
+    if let Err(error) = store.save() {
+        match previous {
+            Some(previous) => store.set(STORE_SETTING_KEY, previous),
+            None => {
+                store.delete(STORE_SETTING_KEY);
+            }
+        };
+        return Err(format!("SETTING_SAVE_FAILED: {error}"));
+    }
     Ok(value)
 }
 

@@ -213,10 +213,13 @@ pub(super) fn run(
     let relocated = match crate::config::dependencies::relocate_mapping(app_handle, source, target) {
         Ok(keys) => keys,
         Err(error) => {
-            let _ = crate::config::try_update_store_dat_setting(app_handle, |setting| {
+            let rollback = crate::config::try_update_store_dat_setting(app_handle, |setting| {
                 setting.dependencies_root = previous.clone();
             });
-            return Err(format!("DEPS_ROOT_TASK: {error}"));
+            return Err(match rollback {
+                Ok(_) => format!("DEPS_ROOT_TASK: {error}"),
+                Err(rollback) => format!("DEPS_ROOT_TASK: {error}; SETTING_ROLLBACK_FAILED: {rollback}"),
+            });
         }
     };
     let rollback_mapping = || {
@@ -224,16 +227,24 @@ pub(super) fn run(
             .iter()
             .filter_map(|key| before_mapping.get(key).map(|value| (key.clone(), value)))
             .collect();
-        let _ = crate::config::dependencies::restore_mapping(app_handle, &entries);
+        crate::config::dependencies::restore_mapping(app_handle, &entries).err()
     };
     let moved = match retire_old_root(source) {
         Ok(moved) => moved,
         Err(error) => {
-            rollback_mapping();
-            let _ = crate::config::try_update_store_dat_setting(app_handle, |setting| {
+            let mapping_rollback = rollback_mapping();
+            let setting_rollback = crate::config::try_update_store_dat_setting(app_handle, |setting| {
                 setting.dependencies_root = previous.clone();
-            });
-            return Err(error);
+            })
+            .err();
+            let mut message = error;
+            if let Some(rollback) = mapping_rollback {
+                message.push_str(&format!("; MAPPING_ROLLBACK_FAILED: {rollback}"));
+            }
+            if let Some(rollback) = setting_rollback {
+                message.push_str(&format!("; SETTING_ROLLBACK_FAILED: {rollback}"));
+            }
+            return Err(message);
         }
     };
 

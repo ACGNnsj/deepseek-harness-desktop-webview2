@@ -110,6 +110,11 @@ export function parseQuickTunnelUrl(line: string): string | undefined {
   return RE_QUICK_URL.exec(line)?.[0]
 }
 
+/** 具名隧道连上边缘才算就绪：新版打 Registered tunnel connection，老版打 Connection registered，退出时的 Unregistering 不算。 */
+export function isNamedTunnelReady(line: string): boolean {
+  return /registered/i.test(line) && !/unregist/i.test(line) && /connection|tunnel/i.test(line)
+}
+
 export function isCloudflaredVersion(output: string): boolean {
   return RE_VERSION.test(output)
 }

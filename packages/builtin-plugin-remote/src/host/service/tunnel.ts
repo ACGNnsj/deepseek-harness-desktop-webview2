@@ -3,7 +3,7 @@ import type { TunnelProcess } from './tunnel.types'
 import { defineService } from 'dsh-tauri'
 import { messageOf } from '../../shared/error'
 import { localUpstream, mintAuthenticatedUrl, tunnelRuntimeDeps } from '../config/runtime'
-import { parseQuickTunnelUrl, tokenTunnelEnv, tunnelArgs } from '../utils/cloudflared'
+import { isNamedTunnelReady, parseQuickTunnelUrl, tokenTunnelEnv, tunnelArgs } from '../utils/cloudflared'
 import { readAccessDocument, writeAccessDocument } from './access.utils'
 import { gateway } from './gateway'
 
@@ -317,7 +317,17 @@ function onLine(mode: RemoteTunnelMode, line: string, generation: number): void 
   if (trimmed === '')
     return
   note('process', trimmed.slice(0, LINE_LIMIT))
-  if (mode !== 'quick' || state === 'running')
+  if (mode !== 'quick') {
+    if (state === 'running')
+      return
+    if (isNamedTunnelReady(trimmed)) {
+      const host = tunnelConfig().hostname
+      if (host)
+        void ready(`https://${host}`)
+    }
+    return
+  }
+  if (state === 'running')
     return
   const found = parseQuickTunnelUrl(trimmed)
   if (found === undefined)
@@ -377,7 +387,7 @@ async function retry(generation: number): Promise<void> {
     launch(tunnelConfig(), binary, ++activation)
   }
   catch (error) {
-    scheduleRestart(generation, `隧道重建失败：${messageOf(error)}`)
+    scheduleRestart(activation, `隧道重建失败：${messageOf(error)}`)
   }
 }
 

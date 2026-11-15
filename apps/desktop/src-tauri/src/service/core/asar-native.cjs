@@ -10,6 +10,7 @@ const { promisify } = require('node:util')
 const workerThreads = require('node:worker_threads')
 
 const CACHE_VERSION = '2'
+const SOURCES_FILE = '.dsh-native-sources.json'
 const registrations = new Map()
 
 module.exports = function registerNativePackages(archive, cache) {
@@ -120,11 +121,11 @@ module.exports = function registerNativePackages(archive, cache) {
     )
   }
 
-  function copy(source, destination, excludeNodeModules = true) {
+  function copy(source, destination, excludeNodeModules = true, provenance) {
     const stat = fs.lstatSync(source)
     if (stat.isSymbolicLink()) {
       if (archived) {
-        copy(fs.realpathSync(source), destination, excludeNodeModules)
+        copy(fs.realpathSync(source), destination, excludeNodeModules, provenance)
         return
       }
       let target = fs.readlinkSync(source)
@@ -133,18 +134,24 @@ module.exports = function registerNativePackages(archive, cache) {
         target = path.resolve(path.dirname(path.join(cache, path.relative(archive, source))), target)
       }
       fs.symlinkSync(target, destination, directory ? process.platform === 'win32' ? 'junction' : 'dir' : 'file')
+      if (provenance !== undefined)
+        provenance.set(destination, source)
     }
     else if (stat.isDirectory()) {
       fs.mkdirSync(destination, { recursive: true })
+      if (provenance !== undefined)
+        provenance.set(destination, source)
       for (const entry of fs.readdirSync(source)) {
         if (entry !== 'node_modules' || !excludeNodeModules)
-          copy(path.join(source, entry), path.join(destination, entry), excludeNodeModules)
+          copy(path.join(source, entry), path.join(destination, entry), excludeNodeModules, provenance)
       }
       fs.chmodSync(destination, stat.mode)
     }
     else {
       fs.writeFileSync(destination, fs.readFileSync(source), { mode: stat.mode })
       fs.chmodSync(destination, stat.mode)
+      if (provenance !== undefined)
+        provenance.set(destination, source)
     }
   }
 
@@ -202,46 +209,192 @@ module.exports = function registerNativePackages(archive, cache) {
   /// staging/P，于是依赖落 staging/P/node_modules/<name>，与 node 在归档里的查找顺序
   /// 完全一致。按来源目录而不是包名去重，两个版本因此各留一份，不会互相顶掉。
   ///
-  /// 共享的传递依赖不按 owner 全量各留一份：Node 会沿父目录向上找，只要某个祖先的
-  /// node_modules 已经有同一来源的副本，这个 owner 就能命中它（issue #1547）。只有
-  /// 祖先链覆盖不到时才再落一份，菱形依赖因此不会按路径数翻倍。
+  /// 收集阶段按来源去重遍历（issue #1553）：同一来源的子图只展开一次，pending 条目
+  /// 数随边数增长，不随路径数增长。放置阶段每个 owner 各落一份（issue #1536）：链上
+  /// 已有同源副本就复用，有同名异源副本遮挡就给该 owner 单独落一份（issue #1553）。
+  /// 所有落盘位置登记 provenance，resolve 时能还原真实来源。
   ///
   /// 返回「相对 staging 的副本路径 → 归档内真实来源」，物化完成后由调用方登记到 sources。
-  function hoist(root, staging) {
-    const placed = new Map()
-    const copies = []
-    const pending = [{ directory: root, target: staging, chain: new Set() }]
+  function hoist(root, staging, provenance) {
+    const needs = []
+    const seen = new Set()
+    const pending = [{ directory: root, chain: new Set() }]
     while (pending.length > 0) {
-      const { directory, target, chain } = pending.shift()
+      const { directory, chain } = pending.shift()
       for (const [, segments] of declarations(directory)) {
         const source = locate(directory, segments)
         if (!source || chain.has(source))
           continue
-        const visible = placed.get(source) ?? []
-        const covered = visible.some(parent => isAncestor(parent, target))
-        const destination = path.join(target, 'node_modules', ...segments)
-        // 包自身的 node_modules 已由 copy(root, staging, false) 原样带入，这里只补
-        // 被提升到归档根、因此不在私有目录里的那些；重复写同一目标会让 publish 的
-        // rename 撞上仍被打开的文件（Windows 上表现为 EPERM）。
-        if (covered) {
+        needs.push({ dependent: directory, segments, source })
+        if (seen.has(source))
           continue
-        }
-        if (!fs.existsSync(destination)) {
-          fs.mkdirSync(path.dirname(destination), { recursive: true })
-          copy(source, destination, false)
-          copies.push({ relative: path.relative(staging, destination), source })
-        }
-        placed.set(source, [...visible, target])
-        pending.push({ directory: source, target: destination, chain: new Set([...chain, source]) })
+        seen.add(source)
+        pending.push({ directory: source, chain: new Set([...chain, source]) })
       }
+    }
+    const copies = []
+    const placements = new Map()
+    placements.set(root, new Set([staging]))
+    const warned = new Set()
+    const warnOnce = (key, message) => {
+      if (warned.has(key))
+        return
+      warned.add(key)
+      console.error(message)
+    }
+    const bySource = new Map()
+    for (const need of needs) {
+      const key = need.source + '\0' + need.segments.join('/')
+      let entry = bySource.get(key)
+      if (entry === undefined) {
+        entry = { source: need.source, segments: need.segments, dependents: [] }
+        bySource.set(key, entry)
+      }
+      if (!entry.dependents.includes(need.dependent))
+        entry.dependents.push(need.dependent)
+    }
+    const ownersOf = (entry) => {
+      const owners = []
+      for (const dependent of entry.dependents) {
+        const dirs = placements.get(dependent)
+        if (dirs === undefined)
+          continue
+        for (const dir of dirs)
+          if (!owners.includes(dir))
+            owners.push(dir)
+      }
+      return owners
+    }
+    const addPlacement = (source, dir) => {
+      let dirs = placements.get(source)
+      if (dirs === undefined) {
+        dirs = new Set()
+        placements.set(source, dirs)
+      }
+      dirs.add(dir)
+    }
+    const firstHit = (owner, segments) => {
+      let dir = owner
+      while (true) {
+        const candidate = path.join(dir, 'node_modules', ...segments)
+        if (fs.existsSync(candidate))
+          return candidate
+        if (dir === staging)
+          return undefined
+        const parent = path.dirname(dir)
+        if (parent === dir || path.relative(staging, parent).startsWith('..'))
+          return undefined
+        dir = parent
+      }
+    }
+    const recordCopy = (source, slot) => {
+      copy(source, slot, false, provenance)
+      copies.push({ relative: path.relative(staging, slot), source })
+      addPlacement(source, slot)
+    }
+    const placeDedicated = (source, segments, owner) => {
+      const slot = path.join(owner, 'node_modules', ...segments)
+      if (fs.existsSync(slot)) {
+        if (provenance.get(slot) === source)
+          addPlacement(source, slot)
+        else
+          warnOnce('poison:' + slot, '[asar-native] 遮挡位置不覆盖：' + slot + ' 已有异源内容')
+        return
+      }
+      const hit = firstHit(owner, segments)
+      if (hit !== undefined && provenance.get(hit) === source) {
+        addPlacement(source, hit)
+        return
+      }
+      fs.mkdirSync(path.dirname(slot), { recursive: true })
+      recordCopy(source, slot)
+    }
+    const placeForOwners = (source, segments, owners) => {
+      for (const owner of owners)
+        placeDedicated(source, segments, owner)
+    }
+    const remaining = [...bySource.values()]
+    let advanced = true
+    while (remaining.length > 0 && advanced) {
+      advanced = false
+      for (let index = 0; index < remaining.length; index++) {
+        const entry = remaining[index]
+        const owners = ownersOf(entry)
+        if (owners.length === 0)
+          continue
+        placeForOwners(entry.source, entry.segments, owners)
+        remaining.splice(index--, 1)
+        advanced = true
+      }
+    }
+    for (const entry of remaining)
+      placeForOwners(entry.source, entry.segments, [staging])
+    const countPlacements = () => {
+      let count = 0
+      for (const dirs of placements.values())
+        count += dirs.size
+      return count
+    }
+    for (let round = 0; round < needs.length * 8 + 64; round++) {
+      const before = countPlacements()
+      for (const need of needs) {
+        const owners = placements.get(need.dependent)
+        if (owners === undefined)
+          continue
+        for (const owner of owners) {
+          const hit = firstHit(owner, need.segments)
+          if (hit !== undefined && provenance.get(hit) === need.source)
+            continue
+          placeDedicated(need.source, need.segments, owner)
+        }
+      }
+      if (countPlacements() === before)
+        break
+      if (round === needs.length * 8 + 63)
+        warnOnce('unstable', '[asar-native] 放置轮数用尽，仍有依赖未落定')
     }
     return copies
   }
 
-  /// `parent` 是否等于 `target` 或位于它的祖先链上：Node 的查找顺序就是这条链。
-  function isAncestor(parent, target) {
-    const relative = path.relative(parent, target)
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+  function sourceIdentity() {
+    try {
+      const stat = fs.statSync(archive)
+      return { mtimeMs: stat.mtimeMs, size: stat.size }
+    }
+    catch {
+      return undefined
+    }
+  }
+
+  function saveSources(staging, copies) {
+    const entries = {}
+    for (const item of copies)
+      entries[item.relative.split(path.sep).join('/')] = item.source
+    fs.writeFileSync(path.join(staging, SOURCES_FILE), JSON.stringify({ version: CACHE_VERSION, archive, identity: sourceIdentity(), entries }))
+  }
+
+  function restoreSources(destination) {
+    let raw
+    try {
+      raw = fs.readFileSync(path.join(destination, SOURCES_FILE), 'utf8')
+    }
+    catch {
+      return true
+    }
+    try {
+      const saved = JSON.parse(raw)
+      if (saved.version !== CACHE_VERSION || saved.archive !== archive)
+        return false
+      const identity = sourceIdentity()
+      if (identity === undefined || saved.identity?.mtimeMs !== identity.mtimeMs || saved.identity?.size !== identity.size)
+        return false
+      for (const [relative, source] of Object.entries(saved.entries ?? {}))
+        sources.set(path.join(destination, ...relative.split('/')), source)
+      return true
+    }
+    catch {
+      return false
+    }
   }
 
   function complete(destination) {
@@ -273,7 +426,7 @@ module.exports = function registerNativePackages(archive, cache) {
     const destination = path.join(cache, entry)
     if (completed.has(root))
       return destination
-    if (!complete(destination)) {
+    if (!complete(destination) || !restoreSources(destination)) {
       const parts = entry.split(path.sep)
       for (let index = 0; index < parts.length; index++) {
         if (parts[index] !== 'node_modules')
@@ -285,9 +438,11 @@ module.exports = function registerNativePackages(archive, cache) {
       fs.mkdirSync(path.dirname(destination), { recursive: true })
       const staging = fs.mkdtempSync(`${destination}.stage-`)
       try {
-        copy(root, staging, false)
-        const copies = hoist(root, staging)
+        const provenance = new Map()
+        copy(root, staging, false, provenance)
+        const copies = hoist(root, staging, provenance)
         fs.writeFileSync(path.join(staging, '.dsh-native-complete'), CACHE_VERSION)
+        saveSources(staging, copies)
         publish(staging, destination)
         for (const copy of copies)
           sources.set(path.join(destination, copy.relative), copy.source)

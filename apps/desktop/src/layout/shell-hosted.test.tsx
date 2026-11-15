@@ -161,6 +161,24 @@ it('reloads an actual same-origin document only for a pending native restart', a
   expect(invoke).toHaveBeenCalledExactlyOnceWith('host_harness_document', { url: 'http://127.0.0.1:3081?t=1&dshDesktop=1' })
 })
 
+it('renavigates within the same generation only when the service origin changes', async () => {
+  const hosted = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === 'host_harness_document')
+  render(<Shell />)
+  await act(async () => {})
+  expect(hosted()).toEqual([['host_harness_document', { url: 'http://127.0.0.1:3081?t=1&dshDesktop=1' }]])
+  await act(async () => {
+    harness.webviewSrc = 'http://127.0.0.1:3081?t=2&dshDesktop=1'
+  })
+  expect(hosted()).toHaveLength(1)
+  await act(async () => {
+    harness.webviewSrc = 'http://127.0.0.1:3082?t=1&dshDesktop=1'
+  })
+  expect(hosted()).toEqual([
+    ['host_harness_document', { url: 'http://127.0.0.1:3081?t=1&dshDesktop=1' }],
+    ['host_harness_document', { url: 'http://127.0.0.1:3082?t=1&dshDesktop=1' }],
+  ])
+})
+
 it('does not repeat accepted hosted navigation when service health fluctuates', async () => {
   render(<Shell />)
   await act(async () => {})
