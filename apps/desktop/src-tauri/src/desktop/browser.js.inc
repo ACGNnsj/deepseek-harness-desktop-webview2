@@ -54,6 +54,8 @@
     },
   }
 
+  if (typeof document === 'undefined') return
+
   const dropPathByFile = new WeakMap()
   const dropDirByFile = new WeakMap()
 
