@@ -9,7 +9,7 @@ const { fileURLToPath, pathToFileURL } = require('node:url')
 const { promisify } = require('node:util')
 const workerThreads = require('node:worker_threads')
 
-const CACHE_VERSION = '2'
+const CACHE_VERSION = '3'
 const SOURCES_FILE = '.dsh-native-sources.json'
 const registrations = new Map()
 
@@ -205,153 +205,35 @@ module.exports = function registerNativePackages(archive, cache) {
     return null
   }
 
-  /// 依赖按「解析到它的那个包」的私有目录落地：owner 的目录相对归档的路径 P 对应
-  /// staging/P，于是依赖落 staging/P/node_modules/<name>，与 node 在归档里的查找顺序
-  /// 完全一致。按来源目录而不是包名去重，两个版本因此各留一份，不会互相顶掉。
-  ///
-  /// 收集阶段按来源去重遍历（issue #1553）：同一来源的子图只展开一次，pending 条目
-  /// 数随边数增长，不随路径数增长。放置阶段每个 owner 各落一份（issue #1536）：链上
-  /// 已有同源副本就复用，有同名异源副本遮挡就给该 owner 单独落一份（issue #1553）。
-  /// 所有落盘位置登记 provenance，resolve 时能还原真实来源。
-  ///
-  /// 返回「相对 staging 的副本路径 → 归档内真实来源」，物化完成后由调用方登记到 sources。
   function hoist(root, staging, provenance) {
-    const needs = []
-    const seen = new Set()
-    const pending = [{ directory: root, chain: new Set() }]
-    while (pending.length > 0) {
-      const { directory, chain } = pending.shift()
-      for (const [, segments] of declarations(directory)) {
-        const source = locate(directory, segments)
-        if (!source || chain.has(source))
-          continue
-        needs.push({ dependent: directory, segments, source })
-        if (seen.has(source))
-          continue
-        seen.add(source)
-        pending.push({ directory: source, chain: new Set([...chain, source]) })
-      }
-    }
     const copies = []
-    const placements = new Map()
-    placements.set(root, new Set([staging]))
-    const warned = new Set()
-    const warnOnce = (key, message) => {
-      if (warned.has(key))
-        return
-      warned.add(key)
-      console.error(message)
-    }
-    const bySource = new Map()
-    for (const need of needs) {
-      const key = need.source + '\0' + need.segments.join('/')
-      let entry = bySource.get(key)
-      if (entry === undefined) {
-        entry = { source: need.source, segments: need.segments, dependents: [] }
-        bySource.set(key, entry)
-      }
-      if (!entry.dependents.includes(need.dependent))
-        entry.dependents.push(need.dependent)
-    }
-    const ownersOf = (entry) => {
-      const owners = []
-      for (const dependent of entry.dependents) {
-        const dirs = placements.get(dependent)
-        if (dirs === undefined)
+    const top = { names: new Map(), parent: null, target: staging }
+    const pending = [{ directory: root, scope: top, chain: new Set() }]
+    while (pending.length > 0) {
+      const { directory, scope, chain } = pending.shift()
+      for (const [name, segments] of declarations(directory)) {
+        const source = locate(directory, segments)
+        if (!source)
           continue
-        for (const dir of dirs)
-          if (!owners.includes(dir))
-            owners.push(dir)
-      }
-      return owners
-    }
-    const addPlacement = (source, dir) => {
-      let dirs = placements.get(source)
-      if (dirs === undefined) {
-        dirs = new Set()
-        placements.set(source, dirs)
-      }
-      dirs.add(dir)
-    }
-    const firstHit = (owner, segments) => {
-      let dir = owner
-      while (true) {
-        const candidate = path.join(dir, 'node_modules', ...segments)
-        if (fs.existsSync(candidate))
-          return candidate
-        if (dir === staging)
-          return undefined
-        const parent = path.dirname(dir)
-        if (parent === dir || path.relative(staging, parent).startsWith('..'))
-          return undefined
-        dir = parent
-      }
-    }
-    const recordCopy = (source, slot) => {
-      copy(source, slot, false, provenance)
-      copies.push({ relative: path.relative(staging, slot), source })
-      addPlacement(source, slot)
-    }
-    const placeDedicated = (source, segments, owner) => {
-      const slot = path.join(owner, 'node_modules', ...segments)
-      if (fs.existsSync(slot)) {
-        if (provenance.get(slot) === source)
-          addPlacement(source, slot)
-        else
-          warnOnce('poison:' + slot, '[asar-native] 遮挡位置不覆盖：' + slot + ' 已有异源内容')
-        return
-      }
-      const hit = firstHit(owner, segments)
-      if (hit !== undefined && provenance.get(hit) === source) {
-        addPlacement(source, hit)
-        return
-      }
-      fs.mkdirSync(path.dirname(slot), { recursive: true })
-      recordCopy(source, slot)
-    }
-    const placeForOwners = (source, segments, owners) => {
-      for (const owner of owners)
-        placeDedicated(source, segments, owner)
-    }
-    const remaining = [...bySource.values()]
-    let advanced = true
-    while (remaining.length > 0 && advanced) {
-      advanced = false
-      for (let index = 0; index < remaining.length; index++) {
-        const entry = remaining[index]
-        const owners = ownersOf(entry)
-        if (owners.length === 0)
+        let nearest = scope
+        while (nearest && !nearest.names.has(name))
+          nearest = nearest.parent
+        const visible = nearest?.names.get(name)
+        if (visible === source)
           continue
-        placeForOwners(entry.source, entry.segments, owners)
-        remaining.splice(index--, 1)
-        advanced = true
-      }
-    }
-    for (const entry of remaining)
-      placeForOwners(entry.source, entry.segments, [staging])
-    const countPlacements = () => {
-      let count = 0
-      for (const dirs of placements.values())
-        count += dirs.size
-      return count
-    }
-    for (let round = 0; round < needs.length * 8 + 64; round++) {
-      const before = countPlacements()
-      for (const need of needs) {
-        const owners = placements.get(need.dependent)
-        if (owners === undefined)
+        const state = `${source}\0${visible ?? ''}`
+        if (chain.has(state))
           continue
-        for (const owner of owners) {
-          const hit = firstHit(owner, need.segments)
-          if (hit !== undefined && provenance.get(hit) === need.source)
-            continue
-          placeDedicated(need.source, need.segments, owner)
+        const owner = nearest || source === path.join(directory, 'node_modules', ...segments) ? scope : top
+        const destination = path.join(owner.target, 'node_modules', ...segments)
+        if (!fs.existsSync(destination)) {
+          fs.mkdirSync(path.dirname(destination), { recursive: true })
+          copy(source, destination, false, provenance)
+          copies.push({ relative: path.relative(staging, destination), source })
         }
+        owner.names.set(name, source)
+        pending.push({ directory: source, scope: { names: new Map(), parent: owner, target: destination }, chain: new Set(chain).add(state) })
       }
-      if (countPlacements() === before)
-        break
-      if (round === needs.length * 8 + 63)
-        warnOnce('unstable', '[asar-native] 放置轮数用尽，仍有依赖未落定')
     }
     return copies
   }

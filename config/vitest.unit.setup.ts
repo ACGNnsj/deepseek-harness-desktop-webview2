@@ -30,20 +30,16 @@ if (typeof window !== 'undefined') {
   css.supports ??= () => false
   globalThis.CSS = css
 
-  // jsdom 的 localStorage 只实现了部分接口，测试会用到 clear 与写入。
-  const storage = globalThis.localStorage as Storage | undefined
-  if (storage !== undefined) {
-    const items = new Map<string, string>()
-    const complete: Storage = {
-      get length() { return items.size },
-      clear: () => items.clear(),
-      getItem: key => items.get(key) ?? null,
-      key: index => Array.from(items.keys())[index] ?? null,
-      removeItem: key => void items.delete(key),
-      setItem: (key, value) => void items.set(key, String(value)),
-    }
-    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: complete })
-    if (typeof window !== 'undefined')
-      Object.defineProperty(window, 'localStorage', { configurable: true, value: complete })
+  const items = new Map<string, string>()
+  const complete: Storage = {
+    get length() { return items.size },
+    clear: () => items.clear(),
+    getItem: key => items.get(key) ?? null,
+    key: index => Array.from(items.keys())[index] ?? null,
+    removeItem: key => void items.delete(key),
+    setItem: (key, value) => void items.set(key, String(value)),
   }
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: complete })
+  if (typeof window !== 'undefined')
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: complete })
 }

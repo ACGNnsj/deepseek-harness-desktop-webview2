@@ -34,7 +34,6 @@ vi.mock('@/hooks/use-notification-action', () => ({ useNotificationAction: vi.fn
 vi.mock('@/hooks/use-notification-clicked', () => ({ useNotificationClicked: vi.fn() }))
 vi.mock('@overlastic/react', () => ({ useOverlay: () => vi.fn() }))
 vi.mock('@/ui/dialog/config', () => ({ ConfigDialog: () => null }))
-vi.mock('@/ui/core/core-download-widget', () => ({ CoreDownloadWidget: () => null }))
 vi.mock('@/ui/plugin/recovery', () => ({ Recovery: () => null }))
 vi.mock('./startup/preinstall', () => ({ PreinstallSetup: () => null }))
 vi.mock('./navbar/full-sidebar-navbar', () => ({ FullSidebarNavbar: () => null }))
@@ -141,6 +140,16 @@ it('keeps an actual hosted service document transparent without rehosting its cu
   expect(harness.webviewLoaded).toBe(true)
   expect(harness.webviewAlive).toBe(true)
   expect(view.container.querySelector('main')?.className).toContain('pointer-events-none')
+})
+
+it('hosts the new document when the same profile switches to another core url', async () => {
+  render(<Shell />)
+  await act(async () => {})
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('host_harness_document', { url: 'http://127.0.0.1:3081?t=1&dshDesktop=1' })
+  vi.mocked(invoke).mockClear()
+  harness.webviewSrc = 'http://127.0.0.1:3082?t=2&dshDesktop=1'
+  await act(async () => {})
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('host_harness_document', { url: 'http://127.0.0.1:3082?t=2&dshDesktop=1' })
 })
 
 it('rehosts a same-origin document after the kernel process was replaced', async () => {

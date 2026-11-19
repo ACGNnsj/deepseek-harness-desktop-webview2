@@ -1,3 +1,4 @@
+import type { CoreProfileItem, CoreTarget, CoreTaskEvent, CoreVersionItem } from '../../../shared/core'
 import type { RemoteAuthMethod, RemoteConnectionState, RemoteProgress, RemoteTunnelMode } from '../../types/index'
 
 export interface RemoteMachineListItem {
@@ -92,6 +93,29 @@ export interface GetMachinesEventsQuery {
   sinceSeq?: number
 }
 
+export interface GetCoreCurrentQuery {
+  machineId: string
+}
+
+export interface GetCoreProfilesQuery {
+  machineId: string
+}
+
+export interface RemoteCoreCurrentResponse {
+  item?: CoreTarget
+  error?: string
+}
+
+export interface RemoteCoreProfilesResponse {
+  items?: CoreProfileItem[]
+  error?: string
+}
+
+export interface RemoteCoreVersionsResponse {
+  items?: CoreVersionItem[]
+  error?: string
+}
+
 export interface RemoteMachineEventItem {
   seq?: number
   ts?: string
@@ -179,5 +203,27 @@ export interface SyncApplyItemResult {
 
 export interface SyncApplyResponse {
   items?: SyncApplyItemResult[]
+  error?: string
+}
+
+export interface RemoteCoreInstallBody {
+  machineId?: string
+  tag?: string
+  force?: boolean
+}
+
+export interface RemoteCoreTaskAcceptedResponse {
+  taskId?: string
+  error?: string
+}
+
+export interface GetCoreTasksEventsQuery {
+  taskId?: string
+  sinceSeq?: string | number
+}
+
+export interface RemoteCoreTaskEventsResponse {
+  items?: CoreTaskEvent[]
+  nextSeq?: number
   error?: string
 }

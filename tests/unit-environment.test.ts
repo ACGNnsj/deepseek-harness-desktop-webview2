@@ -18,3 +18,15 @@ it('provides CSSOM identifier escaping for DOM dependencies', () => {
   }
   expect(window.CSS.escape).toBe(CSS.escape)
 })
+
+it('provides browser storage consistently on window and globalThis', () => {
+  const key = 'unit-environment-storage'
+  expect(window.localStorage).toBeDefined()
+  expect(globalThis.localStorage).toBe(window.localStorage)
+  window.localStorage.setItem(key, 'persisted')
+  expect(globalThis.localStorage.getItem(key)).toBe('persisted')
+  expect(globalThis.localStorage.key(0)).toBe(key)
+  expect(globalThis.localStorage.length).toBe(1)
+  globalThis.localStorage.removeItem(key)
+  expect(window.localStorage.getItem(key)).toBeNull()
+})
