@@ -19,6 +19,7 @@ export async function loadOnboardingSteps(slots: SlotRegistry): Promise<Settings
 }
 
 function projectRows(slots: SlotRegistry, slotKey: string): SettingsRow[] {
+  const seen = new Set<string>()
   const rows = slots
     .entries(slotKey as never)
     .map(entry => ({
@@ -26,7 +27,12 @@ function projectRows(slots: SlotRegistry, slotKey: string): SettingsRow[] {
       order: entry.options.order ?? 0,
       label: resolveLabel(entry.options.label),
     }))
-    .filter(row => row.id !== '')
+    .filter((row) => {
+      if (row.id === '' || seen.has(row.id))
+        return false
+      seen.add(row.id)
+      return true
+    })
 
   return orderBy(rows, 'order')
 }

@@ -14,8 +14,6 @@ const GEMINI_MCP_FILE = '.gemini/settings.json'
 
 const CODEX_MCP_FILE = '.codex/config.toml'
 
-const AGENT_SKILL_DIRECTORIES = ['.claude/skills', '.codex/skills'] as const
-
 export const agents = defineService({
   resolve(home: string = homedir()): ImportedServer[] {
     return uniqBy(
@@ -29,11 +27,6 @@ export const agents = defineService({
     )
   },
 
-  peek(home: string = homedir()): string[] {
-    return AGENT_SKILL_DIRECTORIES
-      .map(directory => join(home, directory))
-      .filter(path => existsSync(path))
-  },
 })
 
 function stringEntries(value: unknown): Record<string, string> | undefined {

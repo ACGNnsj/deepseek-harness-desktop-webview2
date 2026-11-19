@@ -5,7 +5,6 @@ import { defineService } from 'dsh-tauri'
 import { providerRuntime } from '../config/runtime'
 import { providerHooks } from '../events'
 import { server } from '../server'
-import { agents } from './agents'
 import { loadFilesystemSkillPlugin } from './provider.utils'
 import { skills } from './skills'
 
@@ -42,7 +41,6 @@ async function remount(packagedDir: string): Promise<void> {
   const roots = [
     packagedDir,
     ...(await skills.listSources()).flatMap(entry => entry.roots),
-    ...agents.peek(),
   ].filter(dir => existsSync(dir))
   try {
     providerRuntime.fiber = host.plugin(plugin, roots.length > 0 ? { customSkillDirs: roots } : {})
