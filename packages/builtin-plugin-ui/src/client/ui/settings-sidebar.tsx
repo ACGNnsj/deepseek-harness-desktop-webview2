@@ -53,7 +53,6 @@ export function SettingsSidebar(_props: SettingsSidebarProps): ReactElement | nu
   locale.useLocale()
   const searchRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
   const searchInputRefProps = { ref: searchRef }
   const [dragging, setDragging] = useState(false)
   const draggingRef = useRef(false)
@@ -109,17 +108,6 @@ export function SettingsSidebar(_props: SettingsSidebarProps): ReactElement | nu
     return scheduleSettingsTeardown(() => setMounted(false))
   }, [live.open])
 
-  useEffect(() => {
-    if (!ui.open)
-      return
-    const list = rows
-    const active = list.some(row => row.id === ui.activeId) ? ui.activeId : list[0]?.id
-    const el = dialogRef.current
-    const rect = el?.getBoundingClientRect()
-    const cs = el === undefined || el === null ? undefined : getComputedStyle(el)
-    console.warn('[settings-debug] rows=', JSON.stringify(list.map(row => row.id)), 'active=', String(active), 'children=', String(contentRef.current?.childElementCount ?? -1), 'rect=', rect === undefined ? 'none' : `${Math.round(rect.x)},${Math.round(rect.y)} ${Math.round(rect.width)}x${Math.round(rect.height)}`, 'cs=', cs === undefined ? 'none' : `${cs.position}|${cs.top}|${cs.left}|${cs.width}x${cs.height}|${cs.transform}|${cs.translate}`)
-  }, [ui.open, ui.activeId, rows])
-
   if (!mounted)
     return null
 
@@ -145,8 +133,8 @@ export function SettingsSidebar(_props: SettingsSidebarProps): ReactElement | nu
       />
       <div
         ref={dialogRef}
-        style={{ position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', width: 'min(960px, calc(100vw - 96px))', height: 'min(640px, calc(100vh - 96px))', zIndex: 999, ...(ui.chatContentWidth === undefined ? {} : { '--dsh-chat-content-width': ui.chatContentWidth }), ...(ui.open ? {} : { visibility: 'hidden', contentVisibility: 'hidden', pointerEvents: 'none' }) } as CSSProperties}
-        className="flex overflow-hidden rounded-[16px] bg-[var(--dsw-specific-sidebar-fill)] text-primary shadow-2xl [--dsh-chat-content-width:748px] [--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width)_+_32px)] [--dsh-composer-side-clearance:16px]"
+        style={{ position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 999, ...(ui.chatContentWidth === undefined ? {} : { '--dsh-chat-content-width': ui.chatContentWidth }), ...(ui.open ? {} : { visibility: 'hidden', contentVisibility: 'hidden', pointerEvents: 'none' }) } as CSSProperties}
+        className="flex overflow-hidden rounded-[16px] w-[min(960px,calc(100vw-96px))] h-[min(640px,calc(100vh-96px))] bg-[var(--dsw-specific-sidebar-fill)] text-primary shadow-2xl [--dsh-chat-content-width:748px] [--dsh-composer-card-max-width:calc(var(--dsh-chat-content-width)_+_32px)] [--dsh-composer-side-clearance:16px]"
         data-slot-sidebar="dsh-tauri-ui"
         data-shortcut-modal="settings"
         role="dialog"
@@ -202,7 +190,6 @@ export function SettingsSidebar(_props: SettingsSidebarProps): ReactElement | nu
           onPointerDown={onHandlePointerDown}
         />
         <div
-          ref={contentRef}
           data-slot="settings.content"
           className="flex-1 min-w-0 h-full box-border overflow-y-auto flex bg-[var(--dsw-alias-bg-base)] rounded-tl-[16px] [corner-shape:round]"
         >
