@@ -1,5 +1,7 @@
 (() => {
   if (window.self !== window.top) return
+  if (window.__dshHostPathsInstalled === true) return
+  window.__dshHostPathsInstalled = true
   const ipc = window.__TAURI_INTERNALS__
   const listeners = new Map()
   let subscription
@@ -264,15 +266,18 @@
       return
     }
     let paths = []
-    try {
-      const internals = window.__TAURI_INTERNALS__
-      if (!internals || typeof internals.invoke !== 'function') throw new Error('invoke unavailable')
-      const listed = await internals.invoke('read_clipboard_file_paths')
-      if (Array.isArray(listed)) paths = listed
-    } catch (error) {
-      console.warn(`[dsh-host-paths] clipboard paths unavailable: ${error}`)
-      resume(source)
-      return
+    const types = Array.from(source.types || [])
+    if (types.includes('Files')) {
+      try {
+        const internals = window.__TAURI_INTERNALS__
+        if (!internals || typeof internals.invoke !== 'function') throw new Error('invoke unavailable')
+        const listed = await internals.invoke('read_clipboard_file_paths')
+        if (Array.isArray(listed)) paths = listed
+      } catch (error) {
+        console.warn(`[dsh-host-paths] clipboard paths unavailable: ${error}`)
+        resume(source)
+        return
+      }
     }
     console.info(`[dsh-host-paths] paste snaps=${snaps.length} paths=${paths.length}`)
     const remaining = new Map()
