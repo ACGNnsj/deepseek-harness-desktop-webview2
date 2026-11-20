@@ -1,4 +1,19 @@
 #[tauri::command]
+pub async fn show_drop_error(window: crate::Window, message: String) -> Result<(), String> {
+    if message.is_empty() || message.len() > 4096 {
+        return Err("DROP_ERROR_INVALID_MESSAGE".to_string());
+    }
+    rfd::AsyncMessageDialog::new()
+        .set_parent(&window)
+        .set_title("图片读取失败 / Image read failed")
+        .set_description(&message)
+        .set_level(rfd::MessageLevel::Error)
+        .show()
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn read_dropped_file_bytes(path: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         const LIMIT: u64 = 32 * 1024 * 1024;

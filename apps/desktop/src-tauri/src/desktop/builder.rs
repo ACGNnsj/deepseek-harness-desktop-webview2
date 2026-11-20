@@ -1449,6 +1449,7 @@ pub fn handler() -> impl Fn(Invoke) -> bool + Send + Sync + 'static {
         crate::bridge::read_clipboard_text,
         crate::bridge::read_clipboard_file_paths,
         crate::bridge::read_dropped_file_bytes,
+        crate::bridge::show_drop_error,
         crate::bridge::write_clipboard_text,
         crate::desktop::window::create_app_window,
         crate::desktop::window::activate_window,
@@ -1494,6 +1495,9 @@ fn guest_command_allowed(command: &str) -> bool {
             | "remote_open_window"
             | "create_app_window"
             | "read_clipboard_text"
+            | "read_clipboard_file_paths"
+            | "read_dropped_file_bytes"
+            | "show_drop_error"
             | "write_clipboard_text"
             | "report_plugin_error"
     )
@@ -1507,6 +1511,9 @@ fn guest_command_scope_preserves_plugin_actions_and_blocks_shell_control() {
     assert!(guest_command_allowed("release_browser_guest"));
     assert!(guest_command_allowed("open_in_app"));
     assert!(guest_command_allowed("read_clipboard_text"));
+    assert!(guest_command_allowed("read_clipboard_file_paths"));
+    assert!(guest_command_allowed("read_dropped_file_bytes"));
+    assert!(guest_command_allowed("show_drop_error"));
     assert!(guest_command_allowed("write_clipboard_text"));
     assert!(guest_command_allowed("report_plugin_error"));
     for command in [

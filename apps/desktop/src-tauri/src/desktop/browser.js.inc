@@ -125,6 +125,8 @@
           transfer.items.add(new File([bytes], name, { type }))
         } catch (error) {
           console.warn(`[dsh-host-paths] image skipped: ${name} (${error})`)
+          void Promise.resolve().then(() => ipc.invoke('show_drop_error', { message: `${name}: ${error}` }))
+            .catch((error) => console.error('[dsh-host-paths] drop feedback failed', error))
         }
         continue
       }
@@ -229,6 +231,7 @@
     e.stopPropagation()
   }, true)
 
+  let pasteQueue = Promise.resolve()
   let firingSyntheticPaste = false
   async function resolvePaste(event) {
     if (firingSyntheticPaste) return
@@ -261,64 +264,60 @@
     }
     event.preventDefault()
     event.stopPropagation()
-    if (snaps.length === 0) {
-      resume(source)
-      return
-    }
-    let paths = []
     const types = Array.from(source.types || [])
+    let pendingPaths = Promise.resolve([])
     if (types.includes('Files')) {
-      try {
-        const internals = window.__TAURI_INTERNALS__
-        if (!internals || typeof internals.invoke !== 'function') throw new Error('invoke unavailable')
-        const listed = await internals.invoke('read_clipboard_file_paths')
-        if (Array.isArray(listed)) paths = listed
-      } catch (error) {
-        console.warn(`[dsh-host-paths] clipboard paths unavailable: ${error}`)
-        resume(source)
+      try { pendingPaths = ipc.invoke('read_clipboard_file_paths') }
+      catch (error) { pendingPaths = Promise.reject(error) }
+    }
+    pendingPaths = pendingPaths.catch((error) => {
+      console.warn(`[dsh-host-paths] clipboard paths unavailable: ${error}`)
+      return []
+    })
+    pasteQueue = pasteQueue.then(async () => {
+      const listed = await pendingPaths
+      const paths = Array.isArray(listed) ? listed : []
+      console.info(`[dsh-host-paths] paste snaps=${snaps.length} paths=${paths.length}`)
+      const remaining = new Map()
+      for (const entry of paths) {
+        if (!entry || typeof entry.path !== 'string' || typeof entry.name !== 'string') continue
+        const list = remaining.get(entry.name) || []
+        list.push(entry)
+        remaining.set(entry.name, list)
+      }
+      const take = (name, isDir) => {
+        const list = remaining.get(name)
+        if (!list || list.length === 0) return null
+        let at = list.findIndex((entry) => (entry.is_dir === true) === isDir)
+        if (at === -1) at = 0
+        const found = list.splice(at, 1)[0]
+        return found || null
+      }
+      const transfer = new DataTransfer()
+      for (const snap of snaps) {
+        const match = take(snap.name, snap.isDir)
+        if (match && match.is_dir === true) {
+          const vessel = new File([], match.name, { type: '' })
+          dropPathByFile.set(vessel, match.path)
+          dropDirByFile.set(vessel, true)
+          transfer.items.add(vessel)
+          continue
+        }
+        if (snap.file === null) {
+          console.warn(`[dsh-host-paths] paste file unresolved: ${snap.name}`)
+          continue
+        }
+        if (match) dropPathByFile.set(snap.file, match.path)
+        transfer.items.add(snap.file)
+      }
+      if (plain !== '') transfer.setData('text/plain', plain)
+      if (html !== '') transfer.setData('text/html', html)
+      if (transfer.files.length === 0 && plain === '' && html === '') {
         return
       }
-    }
-    console.info(`[dsh-host-paths] paste snaps=${snaps.length} paths=${paths.length}`)
-    const remaining = new Map()
-    for (const entry of paths) {
-      if (!entry || typeof entry.path !== 'string' || typeof entry.name !== 'string') continue
-      const list = remaining.get(entry.name) || []
-      list.push(entry)
-      remaining.set(entry.name, list)
-    }
-    const take = (name, isDir) => {
-      const list = remaining.get(name)
-      if (!list || list.length === 0) return null
-      let at = list.findIndex((entry) => (entry.is_dir === true) === isDir)
-      if (at === -1) at = 0
-      const found = list.splice(at, 1)[0]
-      return found || null
-    }
-    const transfer = new DataTransfer()
-    for (const snap of snaps) {
-      const match = take(snap.name, snap.isDir)
-      if (match && match.is_dir === true) {
-        const vessel = new File([], match.name, { type: '' })
-        dropPathByFile.set(vessel, match.path)
-        dropDirByFile.set(vessel, true)
-        transfer.items.add(vessel)
-        continue
-      }
-      if (snap.file === null) {
-        console.warn(`[dsh-host-paths] paste file unresolved: ${snap.name}`)
-        continue
-      }
-      if (match) dropPathByFile.set(snap.file, match.path)
-      transfer.items.add(snap.file)
-    }
-    if (plain !== '') transfer.setData('text/plain', plain)
-    if (html !== '') transfer.setData('text/html', html)
-    if (transfer.files.length === 0 && plain === '' && html === '') {
-      resume(source)
-      return
-    }
-    resume(transfer)
+      resume(transfer)
+    }).catch((error) => console.error('[dsh-host-paths] paste failed', error))
+    return pasteQueue
   }
   // keep:effect paste takes over file payloads to resolve shell paths before the editor reads them
   document.addEventListener('paste', (event) => { void resolvePaste(event) }, true)

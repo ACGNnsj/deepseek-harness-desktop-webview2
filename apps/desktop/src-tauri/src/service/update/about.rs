@@ -35,7 +35,7 @@ fn release_tag(version: &str) -> Option<String> {
         }
         return Some(format!("nightly-{date}"));
     }
-    Some(format!("v{version}"))
+    Some(format!("webview2-v{version}"))
 }
 
 pub async fn about(app_handle: &crate::AppHandle) -> DesktopAboutInfo {
@@ -64,10 +64,10 @@ mod tests {
     #[test]
     fn release_tag_tracks_the_installed_version_including_prereleases() {
         for (version, tag) in [
-            ("0.22.3", "v0.22.3"),
-            ("0.23.0", "v0.23.0"),
-            ("0.23.0-beta.1", "v0.23.0-beta.1"),
-            ("0.23.0-rc.2", "v0.23.0-rc.2"),
+            ("0.22.3", "webview2-v0.22.3"),
+            ("0.23.0", "webview2-v0.23.0"),
+            ("0.23.0-beta.1", "webview2-v0.23.0-beta.1"),
+            ("0.23.0-rc.2", "webview2-v0.23.0-rc.2"),
             ("0.0.0-nightly.20261008.g7731ffd", "nightly-20261008"),
         ] {
             assert_eq!(release_tag(version).as_deref(), Some(tag), "{version}");

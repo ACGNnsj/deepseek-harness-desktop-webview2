@@ -4,15 +4,15 @@
 //! 轻量解析最新 tag、发布时间、资产名与作者填写的 SHA-256 摘要。摘要缺失不阻断
 //! 官方直连下载，但会禁用镜像兜底（见 [`super::install`]）。
 //!
-//! 更新判定只接受**正式版**（纯数字版本，见 [`super::version::is_stable`]）：
+//! 更新只接受 `webview2-v` 前缀的纯正式 semver；GitHub 的 prerelease 标记不参与判定。
 //! rc/beta/alpha 等 pre-release 与手动测试 release（`test-*` tag）一律跳过，
 //! 用户不会收到非正式版的更新通知；装了 rc 的用户仍会按 semver 收到之后的正式版。
 //!
 //! 夜间构建（`nightly-YYYYMMDD` 的滚动 pre-release，见 `.github/workflows/release-nightly.yml`）
 //! 同样被跳过，但 `releases.atom` 只保留最近 10 条：夜间版按天滚动后会把窗口占满，
 //! 正式版全部被挤出，更新检查会静默失效（用户永远停在当前版本）。因此窗口里一条正式版
-//! 都看不见时会再问一次 `/releases/latest`——该端点由 GitHub 保证指向最新正式版；若它
-//! 恰好没有当前平台的安装包，再翻 `releases` 列表页（HTML，支持 `?page=`）继续找更旧的
+//! 都看不见时会再问一次 `/releases/latest`；若它不可用、属于其他渠道或没有安装包，
+//! 再翻 `releases` 列表页（HTML，支持 `?page=`）继续找本渠道的
 //! 正式版——这是唯一能枚举历史的入口（atom feed 不接受 `?page=`，实测仍返回同一批 10 条）。
 
 use std::time::Duration;
@@ -149,23 +149,21 @@ async fn fetch_expanded_assets(
     Ok((names, body))
 }
 
-/// 从 atom feed 里筛出「严格高于当前版本的正式版」候选，按 feed 顺序（最新在前）。
+/// 从 atom feed 筛出本渠道的更高正式版本，按 semver 降序排列。
 ///
 /// 同时回报窗口里是否出现过正式版：`releases.atom` 只保留最近 10 条，夜间版把窗口
 /// 占满后该值为 false，调用方必须改用 `/releases/latest` 兜底。纯函数，便于测试。
-fn stable_candidates(releases: &[(String, String)], current: &str) -> (Vec<(String, String)>, bool) {
+fn stable_candidates(
+    releases: &[(String, String)],
+    current: &str,
+) -> (Vec<(String, String)>, bool) {
     let mut candidates = Vec::new();
     let mut saw_stable = false;
     for (tag, published_at) in releases {
-        let version = tag.trim_start_matches('v');
-        let Some(parsed) = parse_version(version) else {
+        let Some(version) = stable_tag_version(tag) else {
             log::debug!("UPDATE_SKIP: {tag} 非法 semver（手动测试 release?），跳过");
             continue;
         };
-        if !is_stable(&parsed) {
-            log::debug!("UPDATE_SKIP: {tag} 为 pre-release（非正式版），不通知用户");
-            continue;
-        }
         saw_stable = true;
         if !is_newer(version, current) {
             log::debug!("UPDATE_SKIP: {tag} 不高于当前版本 {current}");
@@ -173,12 +171,22 @@ fn stable_candidates(releases: &[(String, String)], current: &str) -> (Vec<(Stri
         }
         candidates.push((tag.clone(), published_at.clone()));
     }
+    candidates.sort_by_cached_key(|(tag, _)| {
+        std::cmp::Reverse(parse_version(stable_tag_version(tag).unwrap()))
+    });
     (candidates, saw_stable)
 }
 
-/// tag 是否为正式版（纯数字版本，`v` 前缀可选）——与 [`stable_candidates`] 同一套判定。
+fn stable_tag_version(tag: &str) -> Option<&str> {
+    let version = tag.strip_prefix("webview2-v")?;
+    semver::Version::parse(version)
+        .ok()
+        .filter(is_stable)
+        .map(|_| version)
+}
+
 fn is_stable_tag(tag: &str) -> bool {
-    parse_version(tag.trim_start_matches('v')).is_some_and(|parsed| is_stable(&parsed))
+    stable_tag_version(tag).is_some()
 }
 
 /// 从 `/releases/latest` 302 之后的最终 URL 解析 tag（纯函数，便于测试）。
@@ -221,12 +229,17 @@ fn parse_release_listing_tags(html: &str) -> Vec<String> {
 ///
 /// 与 [`stable_candidates`] 同一套过滤规则（非法 semver / pre-release / 不高于当前版本的
 /// 全部跳过）；差别是列表页只有相对时间，不值得为发布时间再多请求一次，故透传空串。
-fn listed_stable_candidates(tags: &[String], current: &str, skip: &[String]) -> Vec<(String, String)> {
-    tags.iter()
+fn listed_stable_candidates(
+    tags: &[String],
+    current: &str,
+    skip: &[String],
+) -> Vec<(String, String)> {
+    let releases = tags
+        .iter()
         .filter(|tag| !skip.iter().any(|s| tag == &s))
-        .filter(|tag| is_stable_tag(tag) && is_newer(tag.trim_start_matches('v'), current))
         .map(|tag| (tag.clone(), String::new()))
-        .collect()
+        .collect::<Vec<_>>();
+    stable_candidates(&releases, current).0
 }
 
 /// 形如 `2026-10-06T16:11:01Z` 的 ISO-8601 UTC 时间戳。
@@ -350,7 +363,9 @@ async fn first_matching_release(
     candidates: Vec<(String, String)>,
 ) -> Result<Option<LatestRelease>, String> {
     for (tag, published_at) in candidates {
-        let version = tag.trim_start_matches('v');
+        let Some(version) = stable_tag_version(&tag) else {
+            continue;
+        };
         if let Some(release) =
             fetch_release_assets(client, repo, &tag, version, &published_at).await?
         {
@@ -363,21 +378,11 @@ async fn first_matching_release(
 /// 查询最新可用的**正式版** Release（无缓存，每次实时检查，走 HTML/atom 而非
 /// api.github.com）。
 ///
-/// 先按 feed 顺序（最新在前）扫描（见 [`stable_candidates`]）：跳过非法 semver（如手动
-/// 测试 release 的 `test-*` tag）、pre-release（rc/beta/夜间版）与不高于当前版本的 tag，
-/// 首个命中的正式版即返回；当前平台无匹配安装包时继续看更旧的正式版。
-///
-/// feed 不可用或没有正式版时改问 `/releases/latest`：GitHub 保证
-/// 它指向最新正式版。只要窗口里看得见任一正式版，最新正式版必然也在窗口内，因此不必兜底
-/// ——这条捷径也保证正式版没被挤出时，更新检查行为与旧实现完全一致。
-///
-/// 兜底候选（最新正式版）自己缺当前平台安装包时，两条路径的语义必须一致：继续往更旧的
-/// 正式版找（`/releases/latest` 只给一个 tag，历史只能靠可翻页的列表页枚举），否则该平台
-/// 会在夜间版占满窗口期间静默停在旧版本，用户永远收不到更新。
-///
 /// 返回 `Ok(Some(LatestRelease))` 表示有更新且匹配到当前平台安装包；
 /// `Ok(None)` 表示无更新（或未匹配到资产）。网络失败返回 Err。
-pub(super) async fn fetch_latest_release(app_handle: &crate::AppHandle) -> Result<Option<LatestRelease>, String> {
+pub(super) async fn fetch_latest_release(
+    app_handle: &crate::AppHandle,
+) -> Result<Option<LatestRelease>, String> {
     if !super::version::supports_stable_updates(&app_handle.config().identifier) {
         return Ok(None);
     }
@@ -402,7 +407,7 @@ async fn fetch_latest_release_from(
     }
     let mut fallback: Vec<(String, String)> = Vec::new();
     if let Some(tag) = fetch_latest_stable_tag(client, repo).await? {
-        if is_stable_tag(&tag) && is_newer(tag.trim_start_matches('v'), current) {
+        if stable_tag_version(&tag).is_some_and(|version| is_newer(version, current)) {
             // 发布时间只有 feed 正文才有：兜底路径不为它再多请求一次页面。该字段仅随
             // 更新信息透传给前端、界面不展示（关于对话框的发布日期走 `about.rs`）。
             fallback.push((tag, String::new()));
@@ -410,16 +415,11 @@ async fn fetch_latest_release_from(
             log::debug!("UPDATE_SKIP: {tag} 非可用正式版（非法/预发布/不高于 {current}）");
         }
     }
-    if fallback.is_empty() {
-        // 一个正式版都没有（`/releases/latest` 404）或都不高于当前版本：确实没有更新
-        return Ok(None);
-    }
     let skip: Vec<String> = fallback.iter().map(|(tag, _)| tag.clone()).collect();
     if let Some(release) = first_matching_release(client, repo, fallback).await? {
         return Ok(Some(release));
     }
 
-    // 兜底候选缺当前平台安装包：翻列表页继续找更旧的正式版
     let older = fetch_listed_stable_candidates(client, repo, current, &skip).await?;
     first_matching_release(client, repo, older).await
 }
@@ -470,9 +470,122 @@ mod tests {
     use super::*;
 
     #[test]
+    fn candidates_accept_only_webview2_stable_semver_in_descending_order() {
+        let releases = [
+            "v99.0.0",
+            "99.0.0",
+            "electron-v99.0.0",
+            "webview2-v99.0.0-rc.1",
+            "webview2-v99.0.0+nightly",
+            "nightly-20261120",
+            "webview2-v0.32.0",
+            "webview2-v0.33.0",
+            "webview2-v0.31.0",
+        ]
+        .map(|tag| (tag.to_string(), String::new()));
+        let expected = vec![
+            ("webview2-v0.33.0".to_string(), String::new()),
+            ("webview2-v0.32.0".to_string(), String::new()),
+        ];
+        assert_eq!(
+            stable_candidates(&releases, "0.31.22"),
+            (expected.clone(), true)
+        );
+        let tags = releases
+            .iter()
+            .map(|(tag, _)| tag.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(listed_stable_candidates(&tags, "0.31.22", &[]), expected);
+        assert_eq!(
+            stable_candidates(&releases[..6], "0.31.22"),
+            (vec![], false)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    async fn webview2_fixture(
+        feed: &str,
+        listing: Option<&str>,
+        msi_only: bool,
+        wrong_latest: bool,
+    ) -> LatestRelease {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let repo = format!("http://{}/ACGNnsj/deepseek-harness-desktop-webview2", listener.local_addr().unwrap());
+            let prefix = "/ACGNnsj/deepseek-harness-desktop-webview2";
+            let mut routes = vec![(format!("{prefix}/releases.atom"), "200 OK", feed.to_string())];
+            if let Some(listing) = listing {
+                if wrong_latest {
+                    routes.push((format!("{prefix}/releases/latest"), "302 Found\r\nLocation: /releases/tag/v99.0.0", String::new()));
+                    routes.push(("/releases/tag/v99.0.0".into(), "200 OK", String::new()));
+                } else {
+                    routes.push((format!("{prefix}/releases/latest"), "404 Not Found", String::new()));
+                }
+                routes.push((format!("{prefix}/releases?page=1"), "200 OK", listing.to_string()));
+            }
+            let mut assets = vec![("Deepseek.Harness.Desktop_0.32.0_x64_en-US.msi", "416bbb0a7865e36bc7d3faa234f1d24485a58e3837e9f36fe16f23c68ba7d99d")];
+            if !msi_only { assets.push(("Deepseek.Harness.Desktop_0.32.0_x64-setup.exe", "6dc45eb848d6d8deeffd2ba8ff9f457ee50f4aeea6cf89054243bf4527abec40")); }
+            let body = assets.iter().map(|(name, hash)| format!(r#"<li><a href="{prefix}/releases/download/webview2-v0.32.0/{name}">{name}</a><span>sha256:{hash}</span></li>"#)).collect::<String>();
+            routes.push((format!("{prefix}/releases/expanded_assets/webview2-v0.32.0"), "200 OK", body));
+            let server = tokio::spawn(async move {
+                for (path, status, body) in routes {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut socket = BufReader::new(socket);
+                    let mut line = String::new();
+                    socket.read_line(&mut line).await.unwrap();
+                    assert!(line.starts_with(&format!("GET {path} ")), "{line}");
+                    loop { line.clear(); assert_ne!(socket.read_line(&mut line).await.unwrap(), 0); if line == "\r\n" { break; } }
+                    socket.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            });
+            let client = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            let result = fetch_latest_release_from(&client, &repo, "0.31.22").await;
+            if !matches!(&result, Ok(Some(_))) { server.abort(); panic!("expected WebView2 release, got {result:?}"); }
+            server.await.unwrap();
+            let release = result.unwrap().unwrap();
+            let name = if msi_only { "Deepseek.Harness.Desktop_0.32.0_x64_en-US.msi" } else { "Deepseek.Harness.Desktop_0.32.0_x64-setup.exe" };
+            assert_eq!(release.version, "0.32.0");
+            assert_eq!(release.tag, "webview2-v0.32.0");
+            assert_eq!(release.asset_name, name);
+            assert_eq!(release.url, format!("{repo}/releases/download/webview2-v0.32.0/{name}"));
+            assert_eq!(release.digest.as_deref(), Some(if msi_only { "sha256:416bbb0a7865e36bc7d3faa234f1d24485a58e3837e9f36fe16f23c68ba7d99d" } else { "sha256:6dc45eb848d6d8deeffd2ba8ff9f457ee50f4aeea6cf89054243bf4527abec40" }));
+            release
+        }).await.unwrap()
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn webview2_atom_prerelease_flag_still_selects_nsis() {
+        webview2_fixture(r#"<feed><entry><link href="/releases/tag/v99.0.0"/></entry><entry><link href="/releases/tag/webview2-v99.0.0-rc.1"/></entry><entry><link href="/releases/tag/webview2-v0.32.0"/><category term="prerelease"/></entry></feed>"#, None, false, false).await;
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn webview2_listing_after_latest_404_selects_msi_fallback() {
+        webview2_fixture(r#"<feed><entry><link href="/releases/tag/nightly-20261120"/></entry></feed>"#, Some(r#"<a href="/releases/tag/v99.0.0">old channel</a><a href="/releases/tag/webview2-v0.32.0">Pre-release</a>"#), true, false).await;
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn webview2_listing_after_wrong_channel_latest_selects_nsis() {
+        webview2_fixture(
+            r#"<feed><entry><link href="/releases/tag/v99.0.0"/></entry></feed>"#,
+            Some(r#"<a href="/releases/tag/webview2-v0.32.0">Pre-release</a>"#),
+            false,
+            true,
+        )
+        .await;
+    }
+
+    #[test]
     fn find_token_extracts_between_markers() {
-        let s = r#"<link rel="alternate" href="https://github.com/x/releases/tag/v0.6.6"/>"#;
-        assert_eq!(find_token(s, "releases/tag/", "\""), Some("v0.6.6"));
+        let s =
+            r#"<link rel="alternate" href="https://github.com/x/releases/tag/webview2-v0.6.6"/>"#;
+        assert_eq!(
+            find_token(s, "releases/tag/", "\""),
+            Some("webview2-v0.6.6")
+        );
         let s2 = "<updated>2026-08-19T09:27:38Z</updated>";
         assert_eq!(
             find_token(s2, "<updated>", "</updated>"),
@@ -486,18 +599,21 @@ mod tests {
     #[test]
     fn parse_atom_entries_multiple_entries_in_order() {
         let feed = r#"<feed>
-            <entry><id>1</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/v0.7.14-rc.1"/><updated>2026-08-20T01:00:00Z</updated></entry>
-            <entry><id>2</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/v0.7.13"/><updated>2026-08-19T00:00:00Z</updated></entry>
+            <entry><id>1</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/webview2-v0.7.14-rc.1"/><updated>2026-08-20T01:00:00Z</updated></entry>
+            <entry><id>2</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/webview2-v0.7.13"/><updated>2026-08-19T00:00:00Z</updated></entry>
             <entry><id>3</id><link rel="alternate" href="/hairyf/deepseek-harness-desktop/releases/tag/test-main-42"/></entry>
         </feed>"#;
         assert_eq!(
             parse_atom_entries(feed),
             vec![
                 (
-                    "v0.7.14-rc.1".to_string(),
+                    "webview2-v0.7.14-rc.1".to_string(),
                     "2026-08-20T01:00:00Z".to_string()
                 ),
-                ("v0.7.13".to_string(), "2026-08-19T00:00:00Z".to_string()),
+                (
+                    "webview2-v0.7.13".to_string(),
+                    "2026-08-19T00:00:00Z".to_string()
+                ),
                 ("test-main-42".to_string(), String::new()),
             ]
         );
@@ -507,15 +623,15 @@ mod tests {
 
     #[test]
     fn extract_asset_names_parses_download_links() {
-        let tag = "v0.6.6";
+        let tag = "webview2-v0.6.6";
         let html = r#"
-            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.6/x64-setup.exe">x</a>
-            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.6/x64_en-US.msi">y</a>
-            <a href="/hairyf/deepseek-harness-desktop/releases/download/v0.6.5/old.dmg">z</a>
+            <a href="/hairyf/deepseek-harness-desktop/releases/download/webview2-v0.6.6/x64-setup.exe">x</a>
+            <a href="/hairyf/deepseek-harness-desktop/releases/download/webview2-v0.6.6/x64_en-US.msi">y</a>
+            <a href="/hairyf/deepseek-harness-desktop/releases/download/webview2-v0.6.5/old.dmg">z</a>
         "#;
         let names = extract_asset_names(html, tag);
         assert_eq!(names, vec!["x64-setup.exe", "x64_en-US.msi"]);
-        assert!(extract_asset_names(html, "v9.9.9").is_empty());
+        assert!(extract_asset_names(html, "webview2-v9.9.9").is_empty());
         assert!(extract_asset_names("", tag).is_empty());
     }
 
@@ -530,7 +646,7 @@ mod tests {
         .unwrap();
         let expected = format!("sha256:{}", "a".repeat(64));
         let body = format!(
-            r#"<li><a href="/releases/download/v99.0.0/{asset}">{asset}</a><span>{expected}</span></li>"#
+            r#"<li><a href="/releases/download/webview2-v99.0.0/{asset}">{asset}</a><span>{expected}</span></li>"#
         );
         let server = tokio::spawn(async move {
             for (path, status, headers, body) in [
@@ -538,12 +654,12 @@ mod tests {
                 (
                     "/releases/latest",
                     "302 Found",
-                    "Location: /releases/tag/v99.0.0\r\n",
+                    "Location: /releases/tag/webview2-v99.0.0\r\n",
                     "",
                 ),
-                ("/releases/tag/v99.0.0", "200 OK", "", ""),
+                ("/releases/tag/webview2-v99.0.0", "200 OK", "", ""),
                 (
-                    "/releases/expanded_assets/v99.0.0",
+                    "/releases/expanded_assets/webview2-v99.0.0",
                     "200 OK",
                     "",
                     body.as_str(),
@@ -580,7 +696,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(release.tag, "v99.0.0");
+        assert_eq!(release.tag, "webview2-v99.0.0");
         assert_eq!(release.asset_name, asset);
         assert_eq!(release.digest, Some(expected));
     }
@@ -589,16 +705,16 @@ mod tests {
     fn missing_asset_digest_does_not_borrow_from_another_row() {
         let other = "b".repeat(64);
         let html = format!(
-            r#"<li><a href="/x/y/releases/download/v0.7.5/app.deb">app.deb</a></li>
-                <li><a href="/x/y/releases/download/v0.7.5/app.deb.exe">app.deb.exe</a>
+            r#"<li><a href="/x/y/releases/download/webview2-v0.7.5/app.deb">app.deb</a></li>
+                <li><a href="/x/y/releases/download/webview2-v0.7.5/app.deb.exe">app.deb.exe</a>
                 <span>sha256:{other}</span></li>"#
         );
         assert_eq!(
-            parse_digest_from_expanded_assets(&html, "v0.7.5", "app.deb"),
+            parse_digest_from_expanded_assets(&html, "webview2-v0.7.5", "app.deb"),
             None
         );
         assert_eq!(
-            parse_digest_from_expanded_assets(&html, "v0.7.5", "app.deb.exe"),
+            parse_digest_from_expanded_assets(&html, "webview2-v0.7.5", "app.deb.exe"),
             Some(format!("sha256:{other}"))
         );
     }
@@ -608,18 +724,19 @@ mod tests {
     fn parse_digest_from_expanded_assets_extracts_sha256() {
         let hex = format!("sha256:{}", "a".repeat(64));
         let html = format!(
-            r#"<li><a href="/x/y/releases/download/v0.7.5/app.dmg">设置包</a><span>{hex}</span></li>"#
+            r#"<li><a href="/x/y/releases/download/webview2-v0.7.5/app.dmg">设置包</a><span>{hex}</span></li>"#
         );
-        let digest = parse_digest_from_expanded_assets(&html, "v0.7.5", "app.dmg");
+        let digest = parse_digest_from_expanded_assets(&html, "webview2-v0.7.5", "app.dmg");
         let expected = format!("sha256:{}", "a".repeat(64));
         assert_eq!(digest.as_deref(), Some(expected.as_str()));
 
         // 无匹配资产 → None
-        assert!(parse_digest_from_expanded_assets(&html, "v0.7.5", "app-x86_64.dmg").is_none());
+        assert!(
+            parse_digest_from_expanded_assets(&html, "webview2-v0.7.5", "app-x86_64.dmg").is_none()
+        );
         // 摘要长度/字符不合法 → None
-        let bad =
-            r#"<li><a href="/x/y/releases/download/v0.7.5/app.dmg">app.dmg</a>sha256:zz</li>"#;
-        assert!(parse_digest_from_expanded_assets(bad, "v0.7.5", "app.dmg").is_none());
+        let bad = r#"<li><a href="/x/y/releases/download/webview2-v0.7.5/app.dmg">app.dmg</a>sha256:zz</li>"#;
+        assert!(parse_digest_from_expanded_assets(bad, "webview2-v0.7.5", "app.dmg").is_none());
     }
 
     /// 回归：多平台 release 页面里每个资产各带一个 `sha256:`，摘要必须按**所选
@@ -632,13 +749,14 @@ mod tests {
         // 模拟真实 expanded_assets：每个资产行 = 下载链接 + 紧跟其后的 sha256，
         // 页面顺序为 rpm（第一个）→ setup.exe（第二个），两者摘要不同。
         let body = format!(
-            r#"<li><a href="/x/y/releases/download/v0.7.5/app.rpm">app.rpm</a><span>sha256:{a}</span></li>
-               <li><a href="/x/y/releases/download/v0.7.5/setup.exe">setup.exe</a><span>sha256:{b}</span></li>"#
+            r#"<li><a href="/x/y/releases/download/webview2-v0.7.5/app.rpm">app.rpm</a><span>sha256:{a}</span></li>
+               <li><a href="/x/y/releases/download/webview2-v0.7.5/setup.exe">setup.exe</a><span>sha256:{b}</span></li>"#
         );
         // 旧实现「取页面里第一个能解析的资产」会拿到 rpm 的摘要（a），
         // 而实际选中的是 setup.exe —— 修复后必须返回 setup.exe 自己的摘要（b）。
-        let rpm_digest = parse_digest_from_expanded_assets(&body, "v0.7.5", "app.rpm");
-        let picked_digest = parse_digest_from_expanded_assets(&body, "v0.7.5", "setup.exe");
+        let rpm_digest = parse_digest_from_expanded_assets(&body, "webview2-v0.7.5", "app.rpm");
+        let picked_digest =
+            parse_digest_from_expanded_assets(&body, "webview2-v0.7.5", "setup.exe");
         let expected_rpm = format!("sha256:{a}");
         let expected_picked = format!("sha256:{b}");
         assert_eq!(rpm_digest.as_deref(), Some(expected_rpm.as_str()));
@@ -666,17 +784,26 @@ mod tests {
 
         // 滚动别名 tag（无日期）同样不参与判定，不得被误当成版本
         let mut mixed = nightlies.clone();
-        mixed.insert(0, ("nightly".to_string(), "2026-10-11T18:00:00Z".to_string()));
+        mixed.insert(
+            0,
+            ("nightly".to_string(), "2026-10-11T18:00:00Z".to_string()),
+        );
         let (candidates, saw_stable) = stable_candidates(&mixed, "0.22.3");
         assert!(candidates.is_empty());
         assert!(!saw_stable);
 
         // 窗口里重新出现正式版：候选按 feed 顺序返回，且不再需要兜底
-        mixed.push(("v0.22.4".to_string(), "2026-10-12T00:00:00Z".to_string()));
+        mixed.push((
+            "webview2-v0.22.4".to_string(),
+            "2026-10-12T00:00:00Z".to_string(),
+        ));
         let (candidates, saw_stable) = stable_candidates(&mixed, "0.22.3");
         assert_eq!(
             candidates,
-            vec![("v0.22.4".to_string(), "2026-10-12T00:00:00Z".to_string())]
+            vec![(
+                "webview2-v0.22.4".to_string(),
+                "2026-10-12T00:00:00Z".to_string()
+            )]
         );
         assert!(saw_stable);
     }
@@ -685,17 +812,20 @@ mod tests {
     #[test]
     fn stable_candidates_skips_prerelease_and_junk_tags() {
         let releases = vec![
-            ("v0.23.0-rc.1".to_string(), "t1".to_string()),
+            ("webview2-v0.23.0-rc.1".to_string(), "t1".to_string()),
             ("test-main-42".to_string(), "t2".to_string()),
-            ("v0.22.3".to_string(), "t3".to_string()),
-            ("v0.22.2".to_string(), "t4".to_string()),
+            ("webview2-v0.22.3".to_string(), "t3".to_string()),
+            ("webview2-v0.22.2".to_string(), "t4".to_string()),
         ];
         let (candidates, saw_stable) = stable_candidates(&releases, "0.22.3");
         assert!(candidates.is_empty());
         assert!(saw_stable);
 
         let (candidates, saw_stable) = stable_candidates(&releases, "0.22.2");
-        assert_eq!(candidates, vec![("v0.22.3".to_string(), "t3".to_string())]);
+        assert_eq!(
+            candidates,
+            vec![("webview2-v0.22.3".to_string(), "t3".to_string())]
+        );
         assert!(saw_stable);
     }
 
@@ -704,15 +834,22 @@ mod tests {
     #[test]
     fn parse_latest_tag_reads_redirect_target() {
         assert_eq!(
-            parse_latest_tag("https://github.com/x/y/releases/tag/v0.22.3").as_deref(),
-            Some("v0.22.3")
+            parse_latest_tag("https://github.com/x/y/releases/tag/webview2-v0.22.3").as_deref(),
+            Some("webview2-v0.22.3")
         );
         assert_eq!(
-            parse_latest_tag("https://github.com/x/y/releases/tag/v0.22.3?expanded=true").as_deref(),
-            Some("v0.22.3")
+            parse_latest_tag("https://github.com/x/y/releases/tag/webview2-v0.22.3?expanded=true")
+                .as_deref(),
+            Some("webview2-v0.22.3")
         );
-        assert_eq!(parse_latest_tag("https://github.com/x/y/releases/latest"), None);
-        assert_eq!(parse_latest_tag("https://github.com/x/y/releases/tag/"), None);
+        assert_eq!(
+            parse_latest_tag("https://github.com/x/y/releases/latest"),
+            None
+        );
+        assert_eq!(
+            parse_latest_tag("https://github.com/x/y/releases/tag/"),
+            None
+        );
     }
 
     /// 回归：`releases.atom` 不接受 `?page=`（实测第 2/3 页与第 1 页内容完全相同），夜间版
@@ -723,14 +860,19 @@ mod tests {
         let html = r#"
             <a href="/x/y/releases/tag/nightly-20261007">n</a>
             <a href="/x/y/releases/tag/nightly">alias</a>
-            <a href="/x/y/releases/tag/v0.22.3">a</a>
-            <a href="/x/y/releases/tag/v0.22.3">dup</a>
-            <a href="/x/y/releases/tag/v0.22.2?expanded=true">b</a>
-            <a href="/x/y/releases/download/v0.22.2/x.dmg">asset</a>
+            <a href="/x/y/releases/tag/webview2-v0.22.3">a</a>
+            <a href="/x/y/releases/tag/webview2-v0.22.3">dup</a>
+            <a href="/x/y/releases/tag/webview2-v0.22.2?expanded=true">b</a>
+            <a href="/x/y/releases/download/webview2-v0.22.2/x.dmg">asset</a>
         "#;
         assert_eq!(
             parse_release_listing_tags(html),
-            vec!["nightly-20261007", "nightly", "v0.22.3", "v0.22.2"]
+            vec![
+                "nightly-20261007",
+                "nightly",
+                "webview2-v0.22.3",
+                "webview2-v0.22.2"
+            ]
         );
         assert!(parse_release_listing_tags("").is_empty());
         assert!(parse_release_listing_tags(r#"<a href="/x/y/releases">list</a>"#).is_empty());
@@ -744,21 +886,21 @@ mod tests {
         let tags: Vec<String> = [
             "nightly-20261007",
             "nightly",
-            "v0.23.0-rc.1",
+            "webview2-v0.23.0-rc.1",
             "test-main-42",
-            "v0.22.3",
-            "v0.22.2",
-            "v0.22.1",
+            "webview2-v0.22.3",
+            "webview2-v0.22.2",
+            "webview2-v0.22.1",
         ]
         .iter()
         .map(|tag| tag.to_string())
         .collect();
-        let skip = vec!["v0.22.3".to_string()];
+        let skip = vec!["webview2-v0.22.3".to_string()];
         assert_eq!(
             listed_stable_candidates(&tags, "0.22.0", &skip),
             vec![
-                ("v0.22.2".to_string(), String::new()),
-                ("v0.22.1".to_string(), String::new()),
+                ("webview2-v0.22.2".to_string(), String::new()),
+                ("webview2-v0.22.1".to_string(), String::new()),
             ]
         );
         // 不高于当前版本的一个都不返回：此时「没有更新」才是正确结论
@@ -771,7 +913,10 @@ mod tests {
     fn parse_published_at_skips_display_only_datetimes() {
         let html = r#"<relative-time datetime="2026-10-06T16:11:01Z">last week</relative-time>
             <relative-time datetime="2026-10-06 15:28:28 UTC">committed</relative-time>"#;
-        assert_eq!(parse_published_at(html).as_deref(), Some("2026-10-06T16:11:01Z"));
+        assert_eq!(
+            parse_published_at(html).as_deref(),
+            Some("2026-10-06T16:11:01Z")
+        );
         // 页面结构变化时返回 None（调用方退回空串 → 界面显示 `-`），不猜一个时间
         assert_eq!(parse_published_at("<p>no datetime</p>"), None);
         assert_eq!(
@@ -805,26 +950,29 @@ mod tests {
         // 1) atom feed 仍能解析出 entry，且候选里的 tag 全部通过 is_stable 过滤
         let feed = fetch(format!("{REPO_URL}/releases.atom")).await;
         let entries = parse_atom_entries(&feed);
-        assert!(!entries.is_empty(), "atom feed 解析不出 entry：页面结构可能已变化");
+        assert!(
+            !entries.is_empty(),
+            "atom feed 解析不出 entry：页面结构可能已变化"
+        );
         let (candidates, _) = stable_candidates(&entries, "0.0.0");
         assert!(
             candidates.iter().all(|(tag, _)| is_stable_tag(tag)),
             "候选里混进了非正式版：{candidates:?}"
         );
 
-        // 2) `/releases/latest` 跟随重定向后的 URL 能取出最新正式版 tag
-        let response = client
-            .get(format!("{REPO_URL}/releases/latest"))
-            .send()
+        let release = fetch_latest_release_from(&client, REPO_URL, "0.0.0")
             .await
-            .expect("请求 /releases/latest 失败");
-        assert!(response.status().is_success(), "HTTP {}", response.status());
-        let tag = parse_latest_tag(response.url().as_str()).expect("/releases/latest 未重定向到 tag 页面");
-        assert!(is_stable_tag(&tag), "{tag} 不是正式版");
+            .expect("检查本渠道发布失败")
+            .expect("找不到本渠道安装包");
+        let tag = release.tag;
+        assert!(is_stable_tag(&tag), "{tag} 不是本渠道正式版");
 
         // 3) tag 页面能解析出发布时间
         let page = fetch(format!("{REPO_URL}/releases/tag/{tag}")).await;
-        assert!(parse_published_at(&page).is_some(), "解析不出 {tag} 的发布时间");
+        assert!(
+            parse_published_at(&page).is_some(),
+            "解析不出 {tag} 的发布时间"
+        );
 
         // 4) expanded_assets 页面能列出该 release 的资产文件名
         let assets = fetch(format!("{REPO_URL}/releases/expanded_assets/{tag}")).await;
@@ -833,7 +981,8 @@ mod tests {
 
         // 5) 列表页能翻到更旧的正式版（兜底路径的枚举入口）
         let listing = fetch(format!("{REPO_URL}/releases?page=1")).await;
-        let listed = listed_stable_candidates(&parse_release_listing_tags(&listing), "0.0.0", &[tag]);
-        assert!(!listed.is_empty(), "列表页里找不到更旧的正式版");
+        let listed =
+            listed_stable_candidates(&parse_release_listing_tags(&listing), "0.0.0", &[]);
+        assert!(!listed.is_empty(), "列表页里找不到本渠道正式版");
     }
 }

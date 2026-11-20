@@ -1,0 +1,16 @@
+[package]
+name = "desktop-update-offline-tests"
+version = "0.32.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+
+[lib]
+path = "lib.rs"
