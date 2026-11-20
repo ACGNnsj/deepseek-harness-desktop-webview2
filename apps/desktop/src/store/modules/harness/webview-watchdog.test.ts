@@ -82,17 +82,13 @@ it('reloads only the document generation and never stops the service', async () 
   expect(harness.webviewKey).toBe(1)
 })
 
-it('reloads the hosted document once after repeated requests without restarting the core', async () => {
+it('reloads the hosted document immediately without restarting the core', () => {
   const reload = vi.fn()
   vi.stubGlobal('__DSH_HOSTED__', true)
+  vi.stubGlobal('__DSH_BOOT__', { entries: [] })
   vi.stubGlobal('location', { reload })
 
   harness.reloadWebview()
-  await vi.advanceTimersByTimeAsync(400)
-  harness.reloadWebview()
-  await vi.advanceTimersByTimeAsync(799)
-  expect(reload).not.toHaveBeenCalled()
-  await vi.advanceTimersByTimeAsync(1)
 
   expect(reload).toHaveBeenCalledOnce()
   expect(harness.webviewKey).toBe(0)
