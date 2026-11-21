@@ -840,18 +840,8 @@ fn harness_capability(label: &str, url: &Url) -> Result<serde_json::Value, Strin
     capability["local"] = false.into();
     capability["windows"] = serde_json::json!([]);
     capability["webviews"] = serde_json::json!([label]);
-    let hosted: serde_json::Value =
-        serde_json::from_str(include_str!("../../capabilities/hosted-shell.json"))
-            .map_err(|error| error.to_string())?;
-    let mut urls = hosted["remote"]["urls"]
-        .as_array()
-        .cloned()
-        .ok_or("HOSTED_SHELL_URLS_INVALID")?;
-    let origin = format!("{}/*", url.origin().ascii_serialization());
-    if !urls.iter().any(|entry| entry.as_str() == Some(origin.as_str())) {
-        urls.push(serde_json::Value::String(origin));
-    }
-    capability["remote"] = serde_json::json!({ "urls": urls });
+    capability["remote"] =
+        serde_json::json!({"urls": [format!("{}/*", url.origin().ascii_serialization())]});
     for permission in capability["permissions"]
         .as_array_mut()
         .ok_or("HARNESS_CAPABILITY_INVALID")?
