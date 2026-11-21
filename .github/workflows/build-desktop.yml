@@ -14,9 +14,9 @@ on:
       - 'apps/desktop/**'
       - 'crates/**'
       - 'packages/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - '.github/workflows/build-desktop.yml'
+      - package.json
+      - pnpm-lock.yaml
+      - .github/workflows/build-desktop.yml
 
 permissions:
   contents: read

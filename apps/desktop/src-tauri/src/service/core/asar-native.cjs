@@ -350,6 +350,16 @@ module.exports = function registerNativePackages(archive, cache) {
     return destination
   }
 
+  function materializedFilename(filename) {
+    if (!path.isAbsolute(filename))
+      return filename
+    const root = packageRoot(filename)
+    if (!root || !isNative(root))
+      return filename
+    refuseElectronLinuxSharp(root)
+    return path.join(materialize(root), path.relative(root, filename))
+  }
+
   // HMR 会在同步 resolve hook 之前预解析 require，必须先还原缓存模块的依赖查找位置。
   const resolveFilename = Module._resolveFilename
   function resolveFromArchive(request, parent, ...options) {
@@ -358,7 +368,7 @@ module.exports = function registerNativePackages(archive, cache) {
       if (filename !== parent.filename)
         parent = Object.assign(Object.create(parent), { filename, paths: parent.paths?.map(original) })
     }
-    return resolveFilename.call(this, request, parent, ...options)
+    return materializedFilename(resolveFilename.call(this, request, parent, ...options))
   }
   Module._resolveFilename = resolveFromArchive
 
@@ -380,11 +390,8 @@ module.exports = function registerNativePackages(archive, cache) {
       if (!result.url.startsWith('file:'))
         return result
       const filename = fileURLToPath(result.url)
-      const root = packageRoot(filename)
-      if (!root || !isNative(root))
-        return result
-      refuseElectronLinuxSharp(root)
-      return { ...result, url: pathToFileURL(path.join(materialize(root), path.relative(root, filename))).href }
+      const materialized = materializedFilename(filename)
+      return materialized === filename ? result : { ...result, url: pathToFileURL(materialized).href }
     },
   })
 
