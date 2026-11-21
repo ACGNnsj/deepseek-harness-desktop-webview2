@@ -1,40 +1,45 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
     "handle": {
       "source": "./skills",
       "sourceType": "local",
-      "computedHash": "bee9ef411bd045bb8175b6b20e6ad2768a3399653044f9e9f47ebc0a9ec992fd"
+      "computedHash": "82c739414a5e5b316b4cfcec3e858c1b8ed672a065a85897d519b14e339288fb"
     },
     "heroui-native": {
       "source": "heroui-inc/heroui",
+      "commit": "08d4f13ce74b4cec13d5b5452f458891950b3ebc",
       "sourceType": "github",
       "skillPath": "skills/heroui-native/SKILL.md",
-      "computedHash": "0c69432d03bb4ab6ce85158631c3d2b05f2efd5c2ddefecca161d7e697054704"
+      "computedHash": "f1769079a8b741a65bcc2a0b052e2d26c3fc5959b43df0a39cdaacffff59558d"
     },
     "heroui-react": {
       "source": "heroui-inc/heroui",
+      "commit": "08d4f13ce74b4cec13d5b5452f458891950b3ebc",
       "sourceType": "github",
       "skillPath": "skills/heroui-react/SKILL.md",
-      "computedHash": "c3633cb324aef2a51a9828c96776897ec2273d8d092cfcfb4dfa754006c7b8df"
+      "computedHash": "30701672e3efefe0e1fbeaadd118010d18b697db674d87ac24103e0a470064a9"
     },
     "reause-functions": {
       "source": "hairyf/reause",
+      "commit": "eb950770ecbfecb34c4fa24d5311a3885e986a57",
       "sourceType": "github",
       "skillPath": "skills/reause-functions/SKILL.md",
-      "computedHash": "65ee026f00446062fb890b751c90a1dc30fed1482f6ffd98f77708c016a5f2c0"
+      "computedHash": "c012bee9351ef937b5016fa19575050c6d4772136a1bbebb595d69948fe74312"
     },
     "rust-best-practices": {
       "source": "apollographql/skills",
+      "commit": "9dda1397730370aeb8df4ff8f2015c34c86b5003",
       "sourceType": "github",
       "skillPath": "skills/rust-best-practices/SKILL.md",
-      "computedHash": "5f050929b5b62c8c847b75955d7d773be9dc649d03778e6e94cd8db1101fb674"
+      "computedHash": "7e12e68aa50152eb7ba9ea1f88ca5380c846ea0175f8ab6788bb79b7faf12ca0"
     },
     "valtio-define": {
       "source": "hairyf/valtio-define",
+      "commit": "d9e54513e1e30600e8a78bfa02b878b678aa5c98",
       "sourceType": "github",
       "skillPath": "skills/valtio-define/SKILL.md",
-      "computedHash": "f6ddb65919ff631433113733ce28ae605655340cefd64059f402a873924d2f40"
+      "computedHash": "8c5390555e61f4368a478289df66ada55c728114f5aea4b78d6d1665f1966b71"
     }
   }
 }

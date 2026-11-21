@@ -75,3 +75,17 @@
 
 3. **GIT PROJECT EXEMPTION:**
    - Always leverage Git index if available: `git ls-files` is exponentially faster than PowerShell directory traversal.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues: ACGNnsj/deepseek-harness-desktop-webview2; use explicit `--repo ACGNnsj/deepseek-harness-desktop-webview2`. Origin and gh default repository point to this fork. See docs/agents/issue-tracker.md.
+
+### Triage labels
+
+Keep the five default canonical triage roles; apply labels only as the relevant skill requires. See docs/agents/triage-labels.md.
+
+### Domain docs
+
+single-context: one root `GLOSSARY.md` and architecture decisions in `docs/adr/`, created when first needed. See docs/agents/domain.md.
