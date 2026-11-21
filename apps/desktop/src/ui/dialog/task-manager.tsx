@@ -1,5 +1,5 @@
 import type { PropsWithOverlays } from '@overlastic/react'
-import { ArrowRotateRight } from '@gravity-ui/icons'
+import { ArrowRotateRight, ChevronRight } from '@gravity-ui/icons'
 import { AlertDialog, Button, Input, Modal, Spinner } from '@heroui/react'
 import { useDisclosure } from '@overlastic/react'
 import { useToggle } from '@reause/core'
@@ -49,6 +49,7 @@ export function TaskManagerDialog(props: PropsWithOverlays) {
   const [action, setAction] = useState<{ type: 'end', process: TaskProcess } | { type: 'restart' } | null>(null)
   const [autoRefresh, toggleAutoRefresh] = useToggle<boolean>(true)
   const [showLogs, toggleLogs] = useToggle()
+  const [expanded, toggleExpanded] = useToggle()
   const [search, setSearch] = useState('')
   const [selection, setSelection] = useState<{ pid: number, start_time: number } | null>(null)
   const [sort, setSort] = useState<{ key: SortKey, ascending: boolean }>({ key: 'memory_bytes', ascending: false })
@@ -67,18 +68,24 @@ export function TaskManagerDialog(props: PropsWithOverlays) {
     retry: false,
   })
   const all = processes.data ?? []
-  const number = new Intl.NumberFormat(i18n.language, { maximumFractionDigits: 1 })
-  const rows = all.filter((process) => {
-    const label = t(`task_manager.kind.${process.kind}`)
-    return `${process.name} ${process.pid} ${label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
-  }).sort((a, b) => {
+  const locale = i18n.language
+  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 })
+  const query = search.trim().toLocaleLowerCase()
+  const root = all.find(process => process.kind === 'desktop')
+  const hasChildren = all.length > 1
+  const open = expanded || query !== ''
+  const matches = all.filter(process => matchesSearch(process))
+  const children = matches.filter(process => process !== root).sort((a, b) => {
     const left = a[sort.key]
     const right = b[sort.key]
     const order = typeof left === 'string' && typeof right === 'string'
-      ? left.localeCompare(right, i18n.language)
+      ? left.localeCompare(right, locale)
       : Number(left ?? -1) - Number(right ?? -1)
     return (sort.ascending ? order : -order) || a.pid - b.pid
   })
+  const rows = open || !root ? children : []
+  if (root && matches.length > 0)
+    rows.unshift(root)
   const selected = rows.find(process => process.pid === selection?.pid && process.start_time === selection.start_time)
   const totalMemory = all.reduce((sum, process) => sum + process.memory_bytes, 0)
   const totalCpu = all.reduce((sum, process) => sum + (process.cpu_percent ?? 0), 0)
@@ -102,6 +109,11 @@ export function TaskManagerDialog(props: PropsWithOverlays) {
     },
   })
   const busy = busyAction != null || endProcess.isPending || restart.isPending
+
+  function matchesSearch(process: TaskProcess) {
+    const label = t(`task_manager.kind.${process.kind}`)
+    return `${process.name} ${process.pid} ${label}`.toLocaleLowerCase().includes(query)
+  }
 
   function sortBy(key: SortKey) {
     setSort(previous => ({ key, ascending: previous.key === key ? !previous.ascending : key === 'name' || key === 'pid' }))
@@ -159,22 +171,44 @@ export function TaskManagerDialog(props: PropsWithOverlays) {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(process => (
-                      <tr key={`${process.pid}-${process.start_time}`} className="border-t border-line data-[selected=true]:bg-accent/10" data-selected={selected === process}>
-                        <td className="px-3 py-2">
-                          <Button variant="ghost" className="h-auto w-full justify-start px-2 py-1 text-left" aria-pressed={selected === process} onPress={() => setSelection({ pid: process.pid, start_time: process.start_time })}>
-                            <span className="max-w-56 truncate">
-                              <span className="block truncate">{process.name}</span>
-                              <span className="block text-xs text-muted">{t(`task_manager.kind.${process.kind}`)}</span>
-                            </span>
-                          </Button>
-                        </td>
-                        <td className="px-5 py-2 tabular-nums">{process.pid}</td>
-                        <td className="px-5 py-2 tabular-nums"><If cond={process.cpu_percent !== null} else="—">{`${number.format(process.cpu_percent ?? 0)}%`}</If></td>
-                        <td className="px-5 py-2 whitespace-nowrap tabular-nums">{`${number.format(process.memory_bytes / 1024 / 1024)} MB`}</td>
-                        <td className="px-5 py-2 tabular-nums">{duration(process.run_time)}</td>
-                      </tr>
-                    ))}
+                    {rows.map((process) => {
+                      const isRoot = process === root
+                      const cpu = isRoot ? (cpuReady ? totalCpu : null) : process.cpu_percent
+                      const memory = isRoot ? totalMemory : process.memory_bytes
+                      return (
+                        <tr key={`${process.pid}-${process.start_time}`} className="border-t border-line data-[selected=true]:bg-accent/10" data-selected={selected === process}>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1" style={{ paddingLeft: isRoot ? 0 : 24 }}>
+                              <If cond={isRoot && hasChildren}>
+                                <button
+                                  type="button"
+                                  className="flex size-5 shrink-0 items-center justify-center rounded text-muted hover:text-foreground"
+                                  aria-label={t(open ? 'task_manager.collapse' : 'task_manager.expand', { name: process.name })}
+                                  aria-expanded={open}
+                                  disabled={query !== ''}
+                                  onClick={() => toggleExpanded()}
+                                >
+                                  <ChevronRight aria-hidden="true" className={open ? 'size-3.5 rotate-90' : 'size-3.5'} />
+                                </button>
+                              </If>
+                              <Button variant="ghost" className="h-auto min-w-0 flex-1 justify-start px-2 py-1 text-left" aria-pressed={selected === process} onPress={() => setSelection({ pid: process.pid, start_time: process.start_time })}>
+                                <span className="max-w-56 truncate">
+                                  <span className="block truncate">
+                                    {process.name}
+                                    <If cond={isRoot && hasChildren}><span aria-hidden="true">{` (${number.format(all.length)})`}</span></If>
+                                  </span>
+                                  <span className="block text-xs text-muted">{t(`task_manager.kind.${process.kind}`)}</span>
+                                </span>
+                              </Button>
+                            </div>
+                          </td>
+                          <td className="px-5 py-2 tabular-nums">{process.pid}</td>
+                          <td className="px-5 py-2 tabular-nums"><If cond={cpu !== null} else="—">{`${number.format(cpu ?? 0)}%`}</If></td>
+                          <td className="px-5 py-2 whitespace-nowrap tabular-nums">{`${number.format(memory / 1024 / 1024)} MB`}</td>
+                          <td className="px-5 py-2 tabular-nums">{duration(process.run_time)}</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
                 <If cond={processes.isPending} else={<If cond={rows.length === 0}><p className="p-8 text-center text-sm text-muted">{t('task_manager.empty')}</p></If>}>

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -21,11 +21,46 @@ pub struct TaskManagerProcess {
     can_end: bool,
 }
 
+type ProcessIdentity = (u32, u64);
+
+struct CpuSample {
+    total_ms: u64,
+    percent: Option<f32>,
+}
+
 #[derive(Default)]
 struct Monitor {
     system: System,
     sampled_at: Option<Instant>,
-    cpu_ready: HashSet<(u32, u64)>,
+    cpu_samples: HashMap<ProcessIdentity, CpuSample>,
+}
+
+#[cfg(windows)]
+fn logical_cores() -> usize {
+    use windows_sys::Win32::System::Threading::{ALL_PROCESSOR_GROUPS, GetActiveProcessorCount};
+
+    // SAFETY: ALL_PROCESSOR_GROUPS 是系统支持的查询参数，无需传入指针或句柄。
+    unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) as usize }
+}
+
+#[cfg(not(windows))]
+fn logical_cores() -> usize {
+    use sysinfo::{CpuRefreshKind, RefreshKind};
+
+    static CORES: OnceLock<usize> = OnceLock::new();
+    *CORES.get_or_init(|| {
+        System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing()))
+            .cpus()
+            .len()
+    })
+}
+
+fn cpu_percent(previous_ms: u64, current_ms: u64, elapsed: Duration, cores: usize) -> Option<f32> {
+    if elapsed.is_zero() || cores == 0 {
+        return None;
+    }
+    let used_ms = current_ms.saturating_sub(previous_ms) as f64;
+    Some((used_ms / (elapsed.as_secs_f64() * 1000.0) * 100.0 / cores as f64) as f32)
 }
 
 fn monitor() -> &'static Mutex<Monitor> {
@@ -85,15 +120,6 @@ impl Monitor {
         {
             return;
         }
-        let warm = self
-            .sampled_at
-            .is_some_and(|at| at.elapsed() < Duration::from_secs(10));
-        let previous: HashSet<_> = self
-            .system
-            .processes()
-            .values()
-            .map(|process| (process.pid().as_u32(), process.start_time()))
-            .collect();
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
@@ -102,8 +128,25 @@ impl Monitor {
                 .with_cpu()
                 .with_memory(),
         );
-        self.cpu_ready = if warm { previous } else { HashSet::new() };
-        self.sampled_at = Some(Instant::now());
+        let now = Instant::now();
+        let elapsed = self.sampled_at.map(|at| now.duration_since(at));
+        let cores = logical_cores();
+        self.cpu_samples =
+            self.system
+                .processes()
+                .values()
+                .map(|process| {
+                    let identity = (process.pid().as_u32(), process.start_time());
+                    let total_ms = process.accumulated_cpu_time();
+                    let percent = self.cpu_samples.get(&identity).zip(elapsed).and_then(
+                        |(previous, elapsed)| {
+                            cpu_percent(previous.total_ms, total_ms, elapsed, cores)
+                        },
+                    );
+                    (identity, CpuSample { total_ms, percent })
+                })
+                .collect();
+        self.sampled_at = Some(now);
     }
 
     fn rows(&self, desktop: u32, harness: Option<u32>) -> Vec<TaskManagerProcess> {
@@ -125,16 +168,15 @@ impl Monitor {
             .filter_map(|process| {
                 let pid = process.pid().as_u32();
                 let (kind, can_end) = process_kind(pid, desktop, harness, &parents)?;
-                let cpu_percent = self
-                    .cpu_ready
-                    .contains(&(pid, process.start_time()))
-                    .then_some(process.cpu_usage());
                 Some(TaskManagerProcess {
                     pid,
                     parent_pid: process.parent().map(Pid::as_u32),
                     name: process.name().to_string_lossy().into_owned(),
                     kind,
-                    cpu_percent,
+                    cpu_percent: self
+                        .cpu_samples
+                        .get(&(pid, process.start_time()))
+                        .and_then(|sample| sample.percent),
                     memory_bytes: process.memory(),
                     run_time: process.run_time(),
                     start_time: process.start_time(),
@@ -197,7 +239,7 @@ pub async fn end_task_manager_process(
         if !process.kill() {
             return Err("TASK_MANAGER_END: could not end the process; it may have exited or access was denied".into());
         }
-        monitor().lock().unwrap_or_else(|error| error.into_inner()).sampled_at = None;
+        *monitor().lock().unwrap_or_else(|error| error.into_inner()) = Monitor::default();
         Ok(())
     })).await.map_err(|error| format!("TASK_MANAGER_END: {error}"))?
 }
@@ -264,17 +306,23 @@ mod tests {
             start_time: 102,
             can_end: true,
         };
-        assert!(validate_end(&process, 101)
-            .unwrap_err()
-            .starts_with("TASK_MANAGER_STALE:"));
-        assert!(validate_end(&process, 0)
-            .unwrap_err()
-            .starts_with("TASK_MANAGER_STALE:"));
+        assert!(
+            validate_end(&process, 101)
+                .unwrap_err()
+                .starts_with("TASK_MANAGER_STALE:")
+        );
+        assert!(
+            validate_end(&process, 0)
+                .unwrap_err()
+                .starts_with("TASK_MANAGER_STALE:")
+        );
         assert_eq!(validate_end(&process, 102), Ok(()));
         process.can_end = false;
-        assert!(validate_end(&process, 102)
-            .unwrap_err()
-            .starts_with("TASK_MANAGER_PROTECTED:"));
+        assert!(
+            validate_end(&process, 102)
+                .unwrap_err()
+                .starts_with("TASK_MANAGER_PROTECTED:")
+        );
     }
 
     #[test]
@@ -291,5 +339,45 @@ mod tests {
         assert!(desktop.start_time > 0);
         assert_eq!(desktop.cpu_percent, None);
         assert!(rows.iter().all(|process| !process.can_end));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn uses_logical_processors_from_all_windows_groups() {
+        use windows_sys::Win32::System::Threading::{
+            GetActiveProcessorCount, GetActiveProcessorGroupCount,
+        };
+
+        // SAFETY: 仅查询系统拓扑，组号来自系统报告的有效范围。
+        let expected = unsafe {
+            (0..GetActiveProcessorGroupCount())
+                .map(|group| GetActiveProcessorCount(group) as usize)
+                .sum::<usize>()
+        };
+        assert!(expected > 0);
+        assert_eq!(logical_cores(), expected);
+    }
+
+    #[test]
+    fn normalizes_cpu_to_all_logical_cores() {
+        let elapsed = Duration::from_secs(1);
+        assert_eq!(cpu_percent(1_000, 1_500, elapsed, 8), Some(6.25));
+        assert_eq!(cpu_percent(1_000, 9_000, elapsed, 8), Some(100.0));
+        assert_eq!(cpu_percent(1_500, 1_000, elapsed, 8), Some(0.0));
+        assert_eq!(cpu_percent(0, 500, Duration::ZERO, 8), None);
+        assert_eq!(cpu_percent(0, 500, elapsed, 0), None);
+    }
+
+    #[test]
+    fn reports_cpu_after_two_samples_even_when_the_dialog_was_idle() {
+        let mut monitor = Monitor::default();
+        monitor.refresh();
+        monitor.sampled_at = Some(Instant::now() - Duration::from_secs(11));
+        monitor.refresh();
+        let pid = std::process::id();
+        let rows = monitor.rows(pid, None);
+        let desktop = rows.iter().find(|process| process.pid == pid).unwrap();
+        let usage = desktop.cpu_percent.expect("second sample has a baseline");
+        assert!((0.0..=100.0).contains(&usage), "unexpected cpu: {usage}");
     }
 }
