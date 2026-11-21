@@ -35,6 +35,20 @@ module.exports = function registerNativePackages(archive, cache) {
   const sources = new Map()
 
   function original(filename) {
+    const entry = relative(cache, filename)
+    if (entry !== null) {
+      for (let directory = path.dirname(filename); relative(cache, directory) !== null; directory = path.dirname(directory)) {
+        const root = path.join(archive, path.relative(cache, directory))
+        if (completed.has(root))
+          break
+        if (complete(directory)) {
+          materialize(root)
+          break
+        }
+        if (directory === cache)
+          break
+      }
+    }
     let best
     for (const [copy, source] of sources) {
       const entry = relative(copy, filename)
@@ -43,7 +57,6 @@ module.exports = function registerNativePackages(archive, cache) {
     }
     if (best)
       return path.join(best.source, best.entry)
-    const entry = relative(cache, filename)
     return entry === null ? filename : path.join(archive, entry)
   }
 

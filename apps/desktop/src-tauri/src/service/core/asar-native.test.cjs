@@ -465,6 +465,7 @@ test('a reused cache restores the source map so cache parents resolve through th
   f.write('node_modules/x/index.js', 'module.exports = "x@1"')
   assert.deepEqual(f.load('@scope/pkg'), ['x@1', 'x@1'])
   const saved = JSON.parse(fs.readFileSync(path.join(f.cache, 'node_modules/@scope/pkg', '.dsh-native-sources.json'), 'utf8'))
+  assert.equal(saved.version, '3')
   assert.equal(saved.entries['node_modules/b'], path.join(f.archive, 'node_modules/b'))
   assert.equal(saved.entries['node_modules/x'], path.join(f.archive, 'node_modules/x'))
   f.hook.deregister()
