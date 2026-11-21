@@ -1,28 +1,10 @@
-import type { Page, Request, Response } from 'playwright'
+import type { Page } from 'playwright'
+import type { RuntimeInfo } from '../setup/harness'
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { waitHealthy } from '../setup/harness'
 import { ASSEMBLY_TIMEOUT_MS, collectPageErrors, completePreinstall, diagnose, installErrorCollector, invoke, NAVBAR_MENU_CONFIG, NAVBAR_MENU_POPOVER, pageErrors, SHELL_ROOT, shellAppScope, WINDOW_TIMEOUT_MS } from '../setup/shell'
-
-interface RuntimeInfo {
-  app_version: string
-  node_version: string
-  service_url: string
-  data_dir: string
-  log_path: string
-  platform: string
-  arch: string
-}
-
-interface AppConfig {
-  active_profile: string
-}
-
-interface HealthCheck {
-  status: string
-  service_url: string
-  boot_html?: string
-}
 
 interface BrowserReservation {
   lease: string
@@ -46,52 +28,6 @@ beforeAll(async () => {
     throw error
   }
 }, ASSEMBLY_TIMEOUT_MS)
-
-/**
- * 等 Harness 真正就绪：先确认本窗口仍持有核心，再走产品自身的那条门禁
- * （`proxy_health_check` 同时验证服务在监听与客户端模块都可取）。
- *
- * 就绪判据只能有一条：E2E 自造的判据（页面加载完、能取到 bundle）与产品实际
- * 认可的时机不同，切换档案、复用核心时会把「还没就绪」认成「已就绪」（issue #1384）。
- * 这里只做一件事——核心进程已退出时立刻失败，不把崩溃耗成超时。
- */
-async function waitHealthy(page: Page): Promise<HealthCheck> {
-  let documentState: { protocol: string, readyState: DocumentReadyState } | undefined
-  await expect.poll(async () => {
-    try {
-      documentState = await page.evaluate(() => ({ protocol: location.protocol, readyState: document.readyState }))
-    }
-    catch (error) {
-      if (String(error).includes('Execution context was destroyed, most likely because of a navigation'))
-        return false
-      throw error
-    }
-    return documentState.protocol === 'chrome-error:' || documentState.readyState === 'complete'
-  }, { timeout: WINDOW_TIMEOUT_MS, message: '顶层 Harness 文档必须完成加载后才能调用原生命令' }).toBe(true)
-  if (documentState?.protocol === 'chrome-error:')
-    throw new Error('Harness 顶层导航进入 chrome-error，禁止继续等待原生命令')
-  expect(documentState?.readyState, '顶层 Harness 文档必须完成加载后才能调用原生命令').toBe('complete')
-  let serviceUrl = ''
-  await expect.poll(async () => {
-    const info = await invoke<RuntimeInfo>(page, 'get_runtime_info')
-    serviceUrl = info.service_url
-    try {
-      await invoke(page, 'harness_ownership')
-    }
-    catch (error) {
-      if (String(error).includes('HARNESS_NOT_OWNED'))
-        throw new Error(`Harness 核心已退出：${String(error)}`)
-    }
-    // 就绪判据沿用产品自身那条门禁：它同时验证「服务在监听」与「客户端模块都可取」，
-    // 是壳与 Core 共同认可的信号。核心进程退出已在上面快速失败，不会耗成超时。
-    const health = await invoke<HealthCheck>(page, 'proxy_health_check')
-    return health.status.startsWith('healthy')
-  }, { timeout: WINDOW_TIMEOUT_MS, message: 'Harness 核心未达到就绪状态' }).toBe(true)
-  const origin = new URL(serviceUrl).origin
-  await expect.poll(() => new URL(page.url()).origin, { timeout: WINDOW_TIMEOUT_MS, message: '产品必须自行导航至所属核心文档' }).toBe(origin)
-  await page.locator('div[class$="_frame"]').waitFor({ state: 'visible', timeout: WINDOW_TIMEOUT_MS })
-  return { service_url: serviceUrl, status: `healthy - ${origin}` }
-}
 
 describe('desktop boot and profile lifecycle', () => {
   it('boots an isolated Electron shell with a ready Harness runtime', async () => {
@@ -204,119 +140,33 @@ describe('desktop boot and profile lifecycle', () => {
     expect(await pageErrors(main), '菜单开关不应产生壳层页面异常').toEqual([])
   })
 
-  it('reuses same-profile cores and isolates cloned-profile windows', async () => {
+  it('reloads the hosted page on F5 without restarting the core service', async () => {
     const shell = app.get()
     const main = shell.window.page
-    await waitHealthy(main)
-    const originalConfig = await invoke<AppConfig>(main, 'get_app_config')
-    const originalRuntime = await invoke<RuntimeInfo>(main, 'get_runtime_info')
+    await main.context().addInitScript(collectPageErrors)
+    const health = await waitHealthy(main)
+    const corePid = (await invoke<{ pid: number, kind: string }[]>(main, 'get_task_manager_processes')).find(process => process.kind === 'harness')?.pid
+    expect(corePid, '刷新前必须能读到本应用托管的核心进程').toBeTruthy()
+    await expect.poll(() => main.locator(SHELL_ROOT).isVisible(), { timeout: WINDOW_TIMEOUT_MS, message: 'F5 必须由壳层接管，先等首屏渲染完成' }).toBe(true)
 
-    let cloneId: string | undefined
-    let second: Awaited<ReturnType<typeof shell.openWindow>> | undefined
-    let third: Awaited<ReturnType<typeof shell.openWindow>> | undefined
-    const failures: unknown[] = []
-    const networkFailures: object[] = []
-    const observed = new WeakSet<Page>()
-    const detach: Array<() => void> = []
-    let stage = 'clone-profile'
-    function observePage(page: Page) {
-      if (observed.has(page))
-        return
-      observed.add(page)
-      function record(request: Request, error: string) {
-        const resource = new URL(request.url())
-        const document = new URL(page.url() || 'about:blank')
-        if (networkFailures.length === 32)
-          networkFailures.shift()
-        networkFailures.push({ time: Date.now(), stage, document: (document.origin + document.pathname).slice(0, 256), method: request.method(), resource: (resource.origin + resource.pathname).slice(0, 256), type: request.resourceType(), error })
+    await main.evaluate((value) => {
+      (window as Window & { __dshE2eReloadNonce?: string }).__dshE2eReloadNonce = value
+    }, randomUUID())
+    await main.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await main.keyboard.press('F5')
+
+    await expect.poll(async () => {
+      try {
+        return await main.evaluate(() => (window as Window & { __dshE2eReloadNonce?: string }).__dshE2eReloadNonce === undefined)
       }
-      function failed(request: Request) {
-        record(request, request.failure()?.errorText ?? 'requestfailed')
+      catch {
+        return false
       }
-      function received(response: Response) {
-        if (response.status() >= 400)
-          record(response.request(), `HTTP ${response.status()}`)
-      }
-      page.on('requestfailed', failed)
-      page.on('response', received)
-      detach.push(() => {
-        page.off('requestfailed', failed)
-        page.off('response', received)
-      })
-    }
-    for (const context of shell.browser.contexts()) {
-      context.on('page', observePage)
-      detach.push(() => context.off('page', observePage))
-      context.pages().forEach(observePage)
-    }
-    try {
-      const clone = await invoke<{ id: string }>(main, 'clone_profile', {
-        sourceId: originalConfig.active_profile,
-        name: `e2e-profile-${process.pid}-${Date.now()}`,
-      })
-      cloneId = clone.id
+    }, { timeout: WINDOW_TIMEOUT_MS, message: 'F5 必须真正重新加载当前文档，而不是只切换壳层状态' }).toBe(true)
 
-      stage = 'second-initial'
-      second = await shell.openWindow()
-      observePage(second.page)
-      expect((await invoke<AppConfig>(second.page, 'get_app_config')).active_profile, '同档案窗口必须继承发起窗口档案').toBe(originalConfig.active_profile)
-      expect((await invoke<RuntimeInfo>(second.page, 'get_runtime_info')).service_url, '同档案窗口必须复用核心服务地址').toBe(originalRuntime.service_url)
-      await waitHealthy(second.page)
-
-      stage = 'second-clone'
-      await invoke(second.page, 'set_active_profile', { id: cloneId })
-      await invoke(second.page, 'launch_harness')
-      await expect.poll(async () => (await invoke<HealthCheck>(second!.page, 'proxy_health_check')).status.startsWith('healthy'), { timeout: WINDOW_TIMEOUT_MS }).toBe(true)
-      const targetRuntime = await invoke<RuntimeInfo>(second.page, 'get_runtime_info')
-      await invoke(second.page, 'host_harness_document', { url: targetRuntime.service_url })
-      const clonedRuntime = await waitHealthy(second.page)
-      expect((await invoke<AppConfig>(second.page, 'get_app_config')).active_profile, '切换后窗口必须绑定克隆档案').toBe(cloneId)
-      expect(clonedRuntime.service_url, '克隆档案必须使用独立核心服务地址').not.toBe(originalRuntime.service_url)
-
-      stage = 'third-clone'
-      third = await shell.openWindow('create_app_window', second)
-      observePage(third.page)
-      expect((await invoke<AppConfig>(third.page, 'get_app_config')).active_profile, '克隆档案窗口必须继承克隆档案').toBe(cloneId)
-      expect((await invoke<RuntimeInfo>(third.page, 'get_runtime_info')).service_url, '克隆档案窗口必须复用克隆核心').toBe(clonedRuntime.service_url)
-      await waitHealthy(third.page)
-
-      await shell.closeWindow(third.label)
-      third = undefined
-      await waitHealthy(second.page)
-
-      await shell.closeWindow(second.label)
-      second = undefined
-      expect((await waitHealthy(main)).service_url, '关闭克隆档案窗口不得影响原档案核心').toBe(originalRuntime.service_url)
-    }
-    catch (error) {
-      console.error('[profile-client-load]', { stage, networkFailures })
-      failures.push(error)
-    }
-    finally {
-      detach.forEach(stop => stop())
-      for (const opened of [third, second]) {
-        if (!opened)
-          continue
-        try {
-          await shell.closeWindow(opened.label)
-        }
-        catch (error) {
-          failures.push(error)
-        }
-      }
-      if (cloneId) {
-        try {
-          await expect.poll(
-            () => invoke(main, 'remove_profile', { id: cloneId }).then(() => 'removed', error => String(error)),
-            { timeout: WINDOW_TIMEOUT_MS, message: '关闭克隆档案窗口后其档案应可删除' },
-          ).toBe('removed')
-        }
-        catch (error) {
-          failures.push(error)
-        }
-      }
-    }
-    if (failures.length > 0)
-      throw new AggregateError(failures, '档案窗口生命周期失败（首项为原始异常）')
+    const reloaded = await waitHealthy(main)
+    expect(reloaded.service_url, 'F5 刷新不得更换核心服务地址').toBe(health.service_url)
+    expect((await invoke<{ pid: number, kind: string }[]>(main, 'get_task_manager_processes')).find(process => process.kind === 'harness')?.pid, 'F5 刷新不得重启核心进程').toBe(corePid)
+    expect(await pageErrors(main), 'F5 刷新不应产生页面异常').toEqual([])
   })
 })
