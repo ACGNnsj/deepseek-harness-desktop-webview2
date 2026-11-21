@@ -20,7 +20,7 @@ const { store, userAgent, openOverlay, openUrl, toggleDevtools, emitEvent } = vi
     toggleDevtools: vi.fn<() => Promise<void>>(),
     emitEvent: vi.fn(),
     store: {
-      harness: { status: 'ready', serviceHealthy: true, webviewSrc: 'http://127.0.0.1:3081', markHostedReady: vi.fn(), markWebviewLoaded: vi.fn(), markWebviewAlive: vi.fn(), markWebviewBootReady: vi.fn() },
+      harness: { status: 'ready', serviceHealthy: true, webviewSrc: 'http://127.0.0.1:3081', reloadWebview: vi.fn(), markHostedReady: vi.fn(), markWebviewLoaded: vi.fn(), markWebviewAlive: vi.fn(), markWebviewBootReady: vi.fn() },
       recovery: { recovery: { required: false } },
       desktopUpdater: { updateInfo: null, check: vi.fn().mockResolvedValue(null) },
       setting: { zoom: vi.fn() },
@@ -49,7 +49,8 @@ vi.mock('@/hooks/use-notification-clicked', () => ({ useNotificationClicked: vi.
 vi.mock('@tauri-apps/api/event', async (importOriginal) => {
   const event = await importOriginal<typeof import('@tauri-apps/api/event')>()
   return { ...event, emitTo: (target: EventTarget | string, name: string, payload?: unknown) => {
-    expect(target).toEqual({ kind: 'Window', label: 'main' })
+    if (name !== 'dsh://notification-ready-request')
+      expect(target).toEqual({ kind: 'Window', label: 'main' })
     emitEvent(name, payload)
     return Promise.resolve()
   } }
@@ -125,6 +126,7 @@ beforeEach(() => {
   menuEntries = []
   store.harness.status = 'ready'
   store.harness.serviceHealthy = true
+  store.harness.reloadWebview.mockClear()
   store.setting.zoom.mockClear()
   mockWindows('main')
   mockIPC((command, args) => {
@@ -440,6 +442,22 @@ describe('native View menu recipients', () => {
     mountWindow('remote-alpha')
     act(() => nativeEvent('macos-menu-action', 'desktop-zoom-in', 'remote-alpha'))
     expect(store.setting.zoom).toHaveBeenCalledExactlyOnceWith('increase')
+  })
+
+  it.each(['standard', 'full-sidebar'])('reloads only the targeted %s shell and unsubscribes on close', async (presentation) => {
+    render(<Shell />)
+    mockWindows('remote-alpha')
+    vi.stubGlobal('__DSH_NAVIGATION__', { presentation })
+    const target = render(<Shell />)
+    await act(async () => {})
+    act(() => nativeEvent('macos-menu-action', 'desktop-reload-page', 'other-window'))
+    expect(store.harness.reloadWebview).not.toHaveBeenCalled()
+    act(() => nativeEvent('macos-menu-action', 'desktop-reload-page', 'remote-alpha'))
+    expect(store.harness.reloadWebview).toHaveBeenCalledOnce()
+    target.unmount()
+    await act(async () => {})
+    act(() => nativeEvent('macos-menu-action', 'desktop-reload-page', 'remote-alpha'))
+    expect(store.harness.reloadWebview).toHaveBeenCalledOnce()
   })
 
   it('unsubscribes the recipient when its shell window closes', async () => {
