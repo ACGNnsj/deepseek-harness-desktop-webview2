@@ -8,7 +8,7 @@ import { APPROVE_ACTION_ID, REJECT_ACTION_ID, REPLY_ACTION_ID } from '../constan
 import { locale } from '../locales'
 import { answerQuestionBatch, approveInteraction, pendingDetail, pendingIdentity, pendingNotificationKind, readPendingInteraction, rejectInteraction } from '../service/approval'
 import { allowPendingNotification, allowTurnNotification, boundText, notificationTag } from '../service/decision'
-import { showNativeNotification } from '../service/native'
+import { closeNativeNotifications, showNativeNotification } from '../service/native'
 import { advanceQuestionWizard, canDriveQuestions, questionWizardStep, syncQuestionWizard } from '../service/question-wizard'
 import { createSoundPlayer } from '../service/sound'
 import { readTurnEnd } from '../service/turn-end'
@@ -52,6 +52,8 @@ export const notifyFeature = defineRegister<ClientContext>((controller, ctx, ada
   const seenRunning = new Map<string, boolean | undefined>()
   const seenPending = new Map<string, string | undefined>()
   const timers = new Map<string, () => void>()
+  const delivered = new Map<string, string>()
+  const closing = new Set<string>()
   let sequence = 0
 
   const readSessions = (): SessionsFace | undefined => ctx.get('sessions') as SessionsFace | undefined
@@ -106,24 +108,55 @@ export const notifyFeature = defineRegister<ClientContext>((controller, ctx, ada
     await emit('dsh://notification-ready', { sourceOrigin: location.origin })
   })().catch(error => console.error(`[${PLUGIN_ID}] notification listener failed`, error))
 
+  const dismissSession = (sessionId: string): void => {
+    const tags = [...delivered].filter(([tag, owner]) => owner === sessionId && !closing.has(tag)).map(([tag]) => tag)
+    if (tags.length === 0)
+      return
+    for (const tag of tags)
+      closing.add(tag)
+    void closeNativeNotifications(tags).then((closed) => {
+      for (const tag of tags)
+        closing.delete(tag)
+      if (closed) {
+        for (const tag of tags)
+          delivered.delete(tag)
+      }
+    })
+  }
+
+  const dismissViewed = (): void => {
+    if (typeof document === 'undefined' || document.visibilityState === 'hidden')
+      return
+    const current = adapter.sessionList()?.current
+    if (current)
+      dismissSession(current)
+  }
+
+  if (typeof document !== 'undefined')
+    controller.listen('visibilitychange', dismissViewed)
+
   const notify = (sessionId: string, kind: NotificationKind, title: string, body: string, requireInteraction: boolean, actions?: NativeNotificationAction[], onAction?: (action: string, inputValue: string | null) => void, deliveryKey?: string): void => {
     if (controller.isDisposed() || isArchived(sessionId))
       return
     const settings = notificationSettings.$state
     sequence += 1
+    const tag = notificationTag(sessionId, kind, sequence)
     void showNativeNotification({
       title,
       body: boundText(body, MAX_BODY_CHARS),
-      tag: notificationTag(sessionId, kind, sequence),
+      tag,
       sessionId,
       deliveryKey,
       requireInteraction,
       silent: true,
       actions,
       onAction,
-    }).then((delivered) => {
-      if (delivered && !controller.isDisposed())
-        sound.play(settings.sound, settings.customSound)
+    }).then((accepted) => {
+      if (!accepted || controller.isDisposed())
+        return
+      delivered.set(tag, sessionId)
+      sound.play(settings.sound, settings.customSound)
+      dismissViewed()
     })
   }
 
@@ -351,6 +384,7 @@ export const notifyFeature = defineRegister<ClientContext>((controller, ctx, ada
   }
 
   const observe = (): void => {
+    dismissViewed()
     const list = readSessions()?.list.getSnapshot()
     if (!list)
       return
@@ -373,7 +407,7 @@ export const notifyFeature = defineRegister<ClientContext>((controller, ctx, ada
   // 会话列表是常驻服务：用它驱动观察，顺带拿到标题与当前会话。
   if (workspaceSource)
     controller.add(workspaceSource.subscribe(observe))
-  const listSource = readSessions()?.list
+  const listSource = adapter.sessions?.list ?? readSessions()?.list
   if (listSource) {
     controller.add(listSource.subscribe(observe))
     observe()

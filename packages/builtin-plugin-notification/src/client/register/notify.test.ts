@@ -1,6 +1,7 @@
 import type { LifecycleController } from '../../../../builtin-plugin-tauri/src/client/controller'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createLifecycleController } from '../../../../builtin-plugin-tauri/src/client/controller'
+import { defineAdapter } from '../../../../builtin-plugin-tauri/src/client/register/index.adapter'
 import { notificationSettings } from '../store'
 import { notifyFeature } from './notify'
 
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   openSession: vi.fn(() => ({ status: 'opened' })),
   emit: vi.fn(async () => {}),
   show: vi.fn(async () => true),
+  close: vi.fn(async () => true),
   readTurnEnd: vi.fn(async () => ({ interrupted: false, turn: 42 })),
   play: vi.fn(),
 }))
@@ -23,7 +25,7 @@ vi.mock('dsh-tauri/client', () => ({
 }))
 vi.mock('../locales', () => ({ locale: { text: (key: string) => key } }))
 vi.mock('../store', () => ({ notificationSettings: { $state: {} } }))
-vi.mock('../service/native', () => ({ showNativeNotification: mocks.show }))
+vi.mock('../service/native', () => ({ showNativeNotification: mocks.show, closeNativeNotifications: mocks.close }))
 vi.mock('../service/sound', () => ({ createSoundPlayer: () => ({ play: mocks.play, dispose: vi.fn() }) }))
 vi.mock('../service/turn-end', () => ({ readTurnEnd: mocks.readTurnEnd }))
 
@@ -56,6 +58,93 @@ it('opens a session from a historical notification before creating any new notif
     controller.dispose()
   }
   expect(mocks.listeners.size).toBe(0)
+})
+
+function notificationHarness() {
+  const document = { visibilityState: 'visible' as DocumentVisibilityState, addEventListener: () => undefined, removeEventListener: () => undefined }
+  vi.stubGlobal('document', document)
+  const listListeners = new Set<() => void>()
+  const currentListeners = new Set<() => void>()
+  let running = true
+  let currentSessionId = 'session-2'
+  const list = {
+    getSnapshot: () => ({ ids: ['session-1'], byId: { 'session-1': { id: 'session-1', running, updatedAt: 100 } } }),
+    subscribe: (fn: () => void) => {
+      listListeners.add(fn)
+      return () => listListeners.delete(fn)
+    },
+  }
+  const current = {
+    getSnapshot: () => ({ key: currentSessionId }),
+    subscribe: (fn: () => void) => {
+      currentListeners.add(fn)
+      return () => currentListeners.delete(fn)
+    },
+  }
+  const uiSession = { adapter: { current }, sessionStatus: { getSnapshot: () => new Map([['session-1', { running }]]), subscribe: () => () => undefined } }
+  const ctx = { get: (name: string) => name === 'sessions' ? { list } : name === 'uiSession' ? uiSession : undefined }
+  const adapter = defineAdapter(ctx)
+  const controller = createLifecycleController()
+  const setup = notifyFeature as unknown as (controller: LifecycleController, ctx: unknown, adapter: unknown) => void
+  setup(controller, ctx, adapter)
+  return {
+    controller,
+    setRunning: (value: boolean) => {
+      running = value
+      listListeners.forEach(fn => fn())
+    },
+    setCurrent: (value: string) => {
+      currentSessionId = value
+      currentListeners.forEach(fn => fn())
+    },
+  }
+}
+
+it('retries failed notification dismissal when the visible current session changes away and back', async () => {
+  vi.useFakeTimers()
+  Object.assign(notificationSettings.$state, { turnComplete: 'always', sound: 'default' })
+  mocks.close.mockResolvedValueOnce(false).mockResolvedValue(true)
+  const harness = notificationHarness()
+  try {
+    harness.setRunning(false)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(mocks.show).toHaveBeenCalledOnce()
+    harness.setCurrent('session-1')
+    await Promise.resolve()
+    expect(mocks.close).toHaveBeenCalledTimes(1)
+    harness.setCurrent('session-2')
+    harness.setCurrent('session-1')
+    await Promise.resolve()
+    expect(mocks.close).toHaveBeenCalledTimes(2)
+    expect(mocks.close).toHaveBeenLastCalledWith(['dsh-notification-session-1-1'])
+  }
+  finally {
+    harness.controller.dispose()
+    vi.useRealTimers()
+  }
+})
+
+it('rechecks current session after native delivery resolves', async () => {
+  vi.useFakeTimers()
+  Object.assign(notificationSettings.$state, { turnComplete: 'always', sound: 'default' })
+  let resolveShow!: (accepted: boolean) => void
+  mocks.show.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+    resolveShow = resolve
+  }))
+  const harness = notificationHarness()
+  try {
+    harness.setRunning(false)
+    await vi.advanceTimersByTimeAsync(250)
+    harness.setCurrent('session-1')
+    resolveShow(true)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(mocks.close).toHaveBeenCalledWith(['dsh-notification-session-1-1'])
+  }
+  finally {
+    harness.controller.dispose()
+    vi.useRealTimers()
+  }
 })
 
 it('gives two guest producers the same turn identity and plays sound only for the accepted delivery', async () => {

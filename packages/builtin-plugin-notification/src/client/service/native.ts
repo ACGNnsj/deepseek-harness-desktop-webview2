@@ -68,6 +68,23 @@ function notificationId(tag: string): number {
   return (Math.abs(hash) % 0x7FFFFFFF) || 1
 }
 
+export async function closeNativeNotifications(tags: readonly string[]): Promise<boolean> {
+  if (tags.length === 0 || !isNativeNotificationAvailable())
+    return true
+  try {
+    await invoke('plugin:notifications|remove_active', {
+      notifications: tags.map(tag => ({ id: notificationId(`${location.origin}:${tag}`) })),
+    })
+    for (const tag of tags)
+      handlers.delete(tag)
+    return true
+  }
+  catch (error) {
+    console.warn(`[${PLUGIN_ID}] removeActive failed`, error)
+    return false
+  }
+}
+
 async function ensurePermission(): Promise<boolean> {
   if (await invoke<boolean>('plugin:notifications|is_permission_granted'))
     return true
