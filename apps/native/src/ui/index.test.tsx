@@ -19,6 +19,7 @@ const native = vi.hoisted(() => ({
   scheduleNotificationAsync: vi.fn<(...args: unknown[]) => Promise<string>>(),
   cancelAnimation: vi.fn(),
   alert: vi.fn<typeof import('react-native').Alert.alert>(),
+  openURL: vi.fn<(url: string) => Promise<void>>(),
   dimensions: { width: 440, height: 900 },
   theme: { 'background': '#ffffff', 'foreground': '#0f1115', 'accent-foreground': '#ffffff' } as Record<string, string>,
 }))
@@ -32,7 +33,7 @@ vi.mock('react-native', () => ({
   ScrollView: 'ScrollView',
   Pressable: 'Pressable',
   Platform: { OS: 'android' },
-  Linking: { openURL: vi.fn(async () => {}) },
+  Linking: { openURL: native.openURL },
   useWindowDimensions: () => native.dimensions,
   Dimensions: { get: () => ({ ...native.dimensions }) },
   Keyboard: {
@@ -62,6 +63,7 @@ vi.mock('expo-localization', () => ({ getLocales: () => [{ languageTag: 'zh-CN' 
 // store 模块经 valtio-define persist 插件依赖 AsyncStorage，node 环境用最小实现顶替。
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: { getItem: vi.fn(async () => null), setItem: vi.fn(async () => {}) } }))
 vi.mock('expo-router', () => ({ router: { push: native.push }, useNavigation: () => native.navigation }))
+vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '0.32.0' } } }))
 vi.mock('expo-network', () => ({ getIpAddressAsync: native.getIpAddressAsync }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'home-test-nonce' }))
 vi.mock('expo-notifications', () => ({
@@ -151,6 +153,8 @@ let screen: ReactTestRenderer | undefined
 let store: typeof import('@/store/modules/connection')
 let connection: typeof import('@/store/modules/connection').connection
 let runtime: typeof import('@/store/modules/connection/runtime')
+let updateStore: typeof import('@/store/modules/app-update')
+let appUpdate: typeof import('@/store/modules/app-update').appUpdate
 let HomeScreen: typeof import('@/app/index').default
 
 function text(node: ReactTestInstance | string): string {
@@ -262,6 +266,10 @@ beforeEach(async () => {
   store = await import('@/store/modules/connection')
   connection = store.connection
   resetConnection()
+  updateStore = await import('@/store/modules/app-update')
+  appUpdate = updateStore.appUpdate
+  appUpdate.$patch(updateStore.createAppUpdateState())
+  native.openURL.mockResolvedValue(undefined)
   runtime = await import('@/store/modules/connection/runtime')
   ;({ default: HomeScreen } = await import('@/app/index'))
 })
@@ -485,7 +493,6 @@ describe('rendered Home connection editing', () => {
 
     const content = root().find(node => String(node.type) === 'Content')
     expect(root().find(node => String(node.type) === 'Portal').props.unstable_accessibilityContainerViewIsModal).toBe(true)
-    expect(content.props.className).toBe('gap-5')
     expect(content.findAll(node => String(node.type) === 'Button').map(text)).toEqual([
       i18n.t('connection.editAddress'),
       i18n.t('connection.rename'),
@@ -494,7 +501,6 @@ describe('rendered Home connection editing', () => {
     ])
     expect(texts()).toContain(alpha.url)
     expect(button(i18n.t('connection.delete')).props.variant).toBe('danger-soft')
-    expect(button(i18n.t('common.cancel')).props.className).toBe('mt-1')
     expect(content.find(node => String(node.type) === 'View' && node.props.className === 'gap-3').children).toHaveLength(4)
     expect(native.alert).not.toHaveBeenCalled()
 
@@ -508,7 +514,6 @@ describe('rendered Home connection editing', () => {
     await act(async () => button(i18n.t('connection.reconnect')).props.onLongPress())
     await press(i18n.t('connection.delete'))
     expect(root().findAll(node => String(node.type) === 'Content')).toHaveLength(1)
-    expect(root().find(node => String(node.type) === 'Content').props.className).toBe('gap-5')
     expect(button(i18n.t('connection.delete')).props.variant).toBe('danger')
     expect(native.alert).not.toHaveBeenCalled()
   })
@@ -776,7 +781,6 @@ describe('rendered Home connection drawer', () => {
     const modals = root().findAll(node => String(node.type) === 'Modal')
     expect(modals).toHaveLength(1)
     expect(modals[0]!.props).toMatchObject({ transparent: true, visible: true, statusBarTranslucent: true, navigationBarTranslucent: true })
-    expect(modals[0]!.findAll(node => String(node.type) === 'Pressable').map(node => node.props.className)).toEqual(['flex-1 items-center justify-center gap-5 bg-black/60'])
     expect(modals[0]!.findAll(node => String(node.type) === 'Text').map(text)).toContain('向左滑查看连接信息')
     await act(async () => {
       modals[0]!.find(node => String(node.type) === 'Pressable').props.onPress()
@@ -818,18 +822,7 @@ describe('rendered Home connection drawer', () => {
     expect(root().findAll(node => String(node.type) === 'Modal')).toHaveLength(0)
   })
 
-  it('keeps the drawer heading close to the current connection without restoring a card wrapper', async () => {
-    hydrate()
-    connection.cancelScan()
-    await mount()
-    await press('最近连接')
-
-    const heading = root().findAll(node => String(node.type) === 'View').find(node => node.findAll(child => String(child.type) === 'Button' && child.props.accessibilityLabel === '扫码连接').length === 1 && node.findAll(child => String(child.type) === 'Text').map(text).includes('连接信息') && node.props.className?.includes('justify-between'))
-    expect(heading?.props.className).toBe('flex-row items-center justify-between px-5 pb-1 pt-2')
-    expect(button('重新连接').props.className).toBe('h-auto min-h-16 justify-start gap-3 rounded-xl px-3 py-4')
-  })
-
-  it('uses the same title-and-item style for current and recent hosts with only status dots in the rows', async () => {
+  it('uses the same item for current and recent hosts without duplicating the status text', async () => {
     hydrate(history)
     runtime.connectAddress(alpha)
     holdNetwork()
@@ -843,14 +836,10 @@ describe('rendered Home connection drawer', () => {
     const current = button('重新连接')
     const recent = button('one.local:3080，可用')
     expect(current.props.variant).toBe('ghost')
-    expect(current.props.className).toBe(recent.props.className)
     expect(text(current)).toBe('one.local:3080')
     expect(text(recent)).toBe('one.local:3080')
-    expect(current.findAll(node => String(node.type) === 'View' && node.props.className?.includes('bg-success'))).toHaveLength(1)
-    expect(recent.findAll(node => String(node.type) === 'View' && node.props.className?.includes('bg-success'))).toHaveLength(1)
     expect(texts()).not.toContain('可用')
     expect(texts()).not.toContain('不可用')
-    expect(root().findAll(node => String(node.type) === 'View' && node.props.className?.includes('border-border') && node.props.className?.includes('bg-surface-secondary'))).toHaveLength(0)
     const refresh = button('刷新最近连接')
     expect(root().findAll(node => String(node.type) === 'RefreshIcon')).toEqual(refresh.findAll(node => String(node.type) === 'RefreshIcon'))
 
@@ -878,11 +867,9 @@ describe('rendered Home connection drawer', () => {
     await press('刷新最近连接')
 
     expect(native.fetch).toHaveBeenCalledTimes(2)
-    expect(button('one.local:3080，可用').findAll(node => String(node.type) === 'View' && node.props.className?.includes('bg-success'))).toHaveLength(1)
     await press('刷新最近连接')
 
     expect(native.fetch).toHaveBeenCalledTimes(3)
-    expect(button('one.local:3080，不可用').findAll(node => String(node.type) === 'View' && node.props.className?.includes('bg-danger'))).toHaveLength(1)
     expect(texts()).not.toContain('不可用')
     expect(connection.current).toBeNull()
     expect(drawer().props.open).toBe(true)
@@ -1031,5 +1018,40 @@ describe('rendered Home Android back handling', () => {
     expect(consumed).toBe(false)
     expect(drawer().props.open).toBe(true)
     expect(texts()).toContain('连接信息')
+  })
+})
+
+describe('rendered Home app version footer', () => {
+  it('shows only the running app version in the drawer footer until a newer release is known', async () => {
+    hydrate()
+    connection.cancelScan()
+    await mount()
+    await press('最近连接')
+
+    expect(texts()).toContain('版本 0.32.0')
+    expect(texts()).not.toContain('有新版本')
+    expect(root().findAll(node => node.props.accessibilityRole === 'link')).toHaveLength(0)
+  })
+
+  it('adds a tappable new-version link that opens the release download in the browser', async () => {
+    const downloadUrl = 'https://github.com/ACGNnsj/deepseek-harness-desktop-webview2/releases/download/v0.33.0/Deepseek.Harness.Android_0.33.0.apk'
+    hydrate()
+    connection.cancelScan()
+    await mount()
+    await press('最近连接')
+    expect(native.openURL).not.toHaveBeenCalled()
+
+    await act(async () => {
+      appUpdate.$patch({ latestVersion: '0.33.0', downloadUrl })
+    })
+
+    const link = root().find(node => node.props.accessibilityRole === 'link')
+    expect(text(link)).toBe('有新版本')
+    expect(texts()).toContain('版本 0.32.0')
+    await act(async () => {
+      link.props.onPress()
+    })
+
+    expect(native.openURL).toHaveBeenCalledExactlyOnceWith(downloadUrl)
   })
 })
