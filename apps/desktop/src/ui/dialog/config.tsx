@@ -13,6 +13,7 @@ import { hooks } from '@/config/hooks'
 import { queryKeys } from '@/config/query-keys'
 import { useRemoteShellMachine } from '@/hooks/use-remote-shell'
 import { ConfigAppearance } from '@/ui/config/appearance'
+import { RemoteCoreSection } from '@/ui/config/components/remote-core'
 import { RemoteUnsupported } from '@/ui/config/components/remote-unsupported'
 import { ConfigCore } from '@/ui/config/core'
 import { ConfigDataDir } from '@/ui/config/data-dir'
@@ -49,7 +50,8 @@ export function ConfigDialog(props: ConfigDialogProps) {
   ]
 
   const [activeTab, setActiveTab] = useState<ConfigTab>(props.tab ?? 'application')
-  const remoteBlocked = useRemoteShellMachine() !== null
+  const remoteMachineId = useRemoteShellMachine()
+  const remoteBlocked = remoteMachineId !== null
 
   // 服务重启/退出前由 store 触发，命令式收起本对话框（卸载时自动注销）
   useListener(hooks['config.dialog.hidden'].on, disclosure.cancel)
@@ -108,7 +110,7 @@ export function ConfigDialog(props: ConfigDialogProps) {
                     <If cond={remoteBlocked} then={<RemoteUnsupported title={t('config.plugins')} />} else={<ConfigPlugin />} />
                   </Case>
                   <Case cond="harness">
-                    <If cond={remoteBlocked} then={<RemoteUnsupported title={t('config.harness')} />} else={<ConfigCore />} />
+                    <If cond={remoteMachineId !== null} then={<RemoteCoreSection machineId={remoteMachineId ?? ''} />} else={<ConfigCore />} />
                   </Case>
                   <Case cond="dataDir">
                     <If cond={remoteBlocked} then={<RemoteUnsupported title={t('config.dataDir')} />} else={<ConfigDataDir />} />
