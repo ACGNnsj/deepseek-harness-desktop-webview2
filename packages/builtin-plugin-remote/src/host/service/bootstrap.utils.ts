@@ -777,7 +777,6 @@ export function startCommandFor(profile: MachineProfile, plan?: RemoteInstallPla
   if (profile.startCommand !== undefined)
     return `mkdir -p "$HOME/.dsh" && ( ${profile.startCommand} >>"$HOME/${remoteWebLog(profile.remotePort)}" 2>&1 < /dev/null & ) &`
   const node = `$HOME/${REMOTE_ROOT}/runtime/bin/node`
-  // 入口可以显式给（远端实际装的那份），缺省按安装计划推断。
   const dshBin = entry ?? layoutDshEntry(plan)
   const profileName = safeProfileName(profile.profileName)
   return [

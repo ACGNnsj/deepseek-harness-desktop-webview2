@@ -347,7 +347,6 @@ describe('远端捆绑插件换树与接线怎么排', () => {
 
 const RESOURCE_MANIFEST = `{
   "plugins": {
-    // 已弃用的包：旧版本部署留下的残留
     "depercated": ["dsh-tauri-panel",],
     "built-in": [
       { "id": "dsh-tauri", "spec": "dsh-tauri" },

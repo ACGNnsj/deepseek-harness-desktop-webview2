@@ -2,7 +2,7 @@ import type { TunnelHandlers, TunnelProcess } from '../service/tunnel.types'
 import { Buffer } from 'node:buffer'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import process from 'node:process'
 import { promisify } from 'node:util'
@@ -29,6 +29,10 @@ const EXTRACT_TIMEOUT_MS = 60_000
 
 const RE_VERSION = /^cloudflared version \d+\.\d+\.\d+/m
 const RE_QUICK_URL = /https:\/\/[a-z0-9][a-z0-9-]*\.trycloudflare\.com/
+const RE_METRICS_ADDRESS = /Starting metrics server on (\S+?)\/metrics/
+const RE_HOST_PORT = /^([\w.-]+|\[[\da-f:]+\]):(\d{1,5})$/i
+const CLOUDFLARED_LOG_NAME = 'cloudflared.log'
+const CLOUDFLARED_LOG_MAX_BYTES = 5 * 1024 * 1024
 
 /** 二进制准备阶段的进度：面板据此显示「下载中 x%」而不是静默等待。 */
 export interface CloudflaredProgress {
@@ -116,6 +120,54 @@ export function isCloudflaredVersion(output: string): boolean {
   return RE_VERSION.test(output)
 }
 
+export function parseMetricsAddress(line: string): string | undefined {
+  const found = RE_METRICS_ADDRESS.exec(line)?.[1]
+  if (found === undefined)
+    return undefined
+  const parts = RE_HOST_PORT.exec(found)
+  if (parts === null)
+    return undefined
+  const port = Number(parts[2])
+  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? found : undefined
+}
+
+export async function probeCloudflaredReady(address: string, timeoutMs: number): Promise<{ healthy: boolean, reason?: string }> {
+  try {
+    const response = await fetch(`http://${address}/ready`, { signal: AbortSignal.timeout(timeoutMs) })
+    if (response.status !== 200)
+      return { healthy: false, reason: `HTTP ${response.status}` }
+    const body = await response.json() as { readyConnections?: unknown }
+    const connections = Number(body.readyConnections)
+    return connections > 0
+      ? { healthy: true }
+      : { healthy: false, reason: `HTTP 200 但 readyConnections=${String(body.readyConnections)}` }
+  }
+  catch (error) {
+    return { healthy: false, reason: messageOf(error) }
+  }
+}
+
+export function cloudflaredLogSink(path: string, secret: string | null, maxBytes: number = CLOUDFLARED_LOG_MAX_BYTES): (text: string) => void {
+  let written = fileSize(path)
+  return (text) => {
+    const line = secret === null || secret === '' ? text : text.split(secret).join('***')
+    if (line === '')
+      return
+    const bytes = Buffer.byteLength(line, 'utf8')
+    try {
+      mkdirSync(dirname(path), { recursive: true })
+      if (written + bytes >= maxBytes) {
+        rmSync(`${path}.1`, { force: true })
+        renameSync(path, `${path}.1`)
+        written = 0
+      }
+      appendFileSync(path, line)
+      written += bytes
+    }
+    catch {}
+  }
+}
+
 /** PATH 优先、数据目录次之、最后按平台下载；失败原因一律可读（含尝试过的地址）。 */
 export async function resolveCloudflared(onProgress?: CloudflaredProgressSink): Promise<string> {
   onProgress?.({ stage: 'check' })
@@ -135,14 +187,21 @@ export async function resolveCloudflared(onProgress?: CloudflaredProgressSink): 
 
 export function spawnCloudflared(binary: string, args: string[], handlers: TunnelHandlers, env?: NodeJS.ProcessEnv): TunnelProcess {
   const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...env === undefined ? {} : { env: { ...process.env, ...env } } })
+  const write = cloudflaredLogSink(join(stateDir(), CLOUDFLARED_LOG_NAME), env?.TUNNEL_TOKEN?.trim() ?? null)
   const exited = new Promise<void>((resolve) => {
     child.once('exit', (code, signal) => {
       handlers.onExit(code, signal)
       resolve()
     })
   })
-  consumeLines(child.stdout, handlers.onLine)
-  consumeLines(child.stderr, handlers.onLine)
+  consumeLines(child.stdout, (line) => {
+    write(`${line}\n`)
+    handlers.onLine(line)
+  })
+  consumeLines(child.stderr, (line) => {
+    write(`${line}\n`)
+    handlers.onLine(line)
+  })
   return {
     pid: child.pid,
     exited,
@@ -157,6 +216,15 @@ export function spawnCloudflared(binary: string, args: string[], handlers: Tunne
 }
 
 // --- internal ---
+function fileSize(path: string): number {
+  try {
+    return existsSync(path) ? statSync(path).size : 0
+  }
+  catch {
+    return 0
+  }
+}
+
 function installedBinaryPath(): string {
   const asset = cloudflaredAsset()
   if (asset === undefined)
@@ -251,16 +319,33 @@ async function downloadInto(url: string, asset: CloudflaredAsset, target: string
   }
 }
 
-function consumeLines(stream: NodeJS.ReadableStream | null, listener: (line: string) => void): void {
+export function createLineReader(listener: (line: string) => void): { push: (chunk: string) => void, flush: () => void } {
+  let pending = ''
+  const emit = (line: string): void => {
+    if (line !== '')
+      listener(line)
+  }
+  return {
+    push(chunk) {
+      pending += chunk
+      const lines = pending.split('\n')
+      pending = lines.pop() ?? ''
+      for (const line of lines)
+        emit(line)
+    },
+    flush() {
+      const tail = pending
+      pending = ''
+      emit(tail)
+    },
+  }
+}
+
+export function consumeLines(stream: NodeJS.ReadableStream | null, listener: (line: string) => void): void {
   if (stream === null)
     return
-  let pending = ''
+  const reader = createLineReader(listener)
   stream.setEncoding('utf8')
-  stream.on('data', (chunk: string) => {
-    pending += chunk
-    const lines = pending.split('\n')
-    pending = lines.pop() ?? ''
-    for (const line of lines)
-      listener(line)
-  })
+  stream.on('data', (chunk: string) => reader.push(chunk))
+  stream.on('end', () => reader.flush())
 }

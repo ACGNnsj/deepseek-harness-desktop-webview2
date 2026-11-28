@@ -11,7 +11,6 @@ const CONFIG = { healthPollAttempts: 3, healthPollIntervalMs: 1, healthCheckTime
 
 const BOOT_HTML = `<html><head><script>globalThis['__DSH_BOOT__'] = {"release":{"version":"0.33.1"},"entries":[{"url":"/plugins/dsh-tauri-ui/client.js"}]}</script></head></html>`
 
-/** 按命令内容分派：重启脚本 / 就绪探测 / 端口监听身份。 */
 function sessionOf(overrides: { restart?: RemoteExecResult } = {}) {
   const calls: string[] = []
   const session: RemoteSession = {

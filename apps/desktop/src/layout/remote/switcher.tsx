@@ -33,7 +33,6 @@ export function RemoteSwitcher({ onChange, visible = true, onManage, onSync }: {
     console.warn('[remote] open window failed:', err)
   }
 
-  /** 未连接的机器先等连接成功，避免新窗口开出来再自己连、整页刷新一次 */
   async function openMachineWindow(machine: (typeof machines)[number]): Promise<void> {
     if (openingId !== null)
       return

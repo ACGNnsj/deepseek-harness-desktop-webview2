@@ -157,12 +157,6 @@ function isServicePort(port: unknown): port is number {
   return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535
 }
 
-/**
- * 一次性幂等迁移：上一版现役目录 `$DSH_HOME/remote/` 整体搬进 `$DSH_HOME/remote.ssh/`，
- * 最早的 `$DSH_HOME/ssh/` 只搬两份文档并保留旧文件；进程内去重，失败只回可读原因、绝不阻断插件加载。
- *
- * @returns 未迁移原因（旧文件损坏 / 写入失败）；全部成功或无需迁移时为 undefined。
- */
 export function migrateLegacyState(): string | undefined {
   if (migrated)
     return migrationWarning

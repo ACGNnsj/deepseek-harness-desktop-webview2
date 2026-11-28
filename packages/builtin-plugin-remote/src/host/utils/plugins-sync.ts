@@ -291,7 +291,6 @@ export function pluginSyncMarkerCommand(): string {
   return `cat "$HOME/${SYNC_MARKER}" 2>/dev/null || true`
 }
 
-/** 这个档案接过线的状态（内容哈希 + 插件名单指纹）：没接过线就是空。 */
 export function pluginSyncProfileStateCommand(profileName: string): string {
   return `cat "$HOME/${PROFILE_STATE_DIR}/${profileName}" 2>/dev/null || true`
 }
@@ -429,7 +428,6 @@ export function pluginSyncApplyCommand(options: {
     // 接线：档案的 package.json 与 node_modules 指向这份插件目录。
     `[ -f "$HOME/${profile}/package.json" ] || "$HOME/${REMOTE_ROOT}/runtime/bin/node" "$HOME/${REMOTE_ROOT}/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile ${options.profileName} --from-default-profile web --help >/dev/null 2>&1`,
     `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$TMP/_wire.js" "$HOME/${profile}/package.json" "$BASE/node_modules" "$HOME/${PROFILE_STATE_DIR}/${options.profileName}" "${wiringState}" '${JSON.stringify(options.pluginNames)}'`,
-    // 这份目录的状态跟着目录走：换完树再写，写的就是现在这份。接线没成功就不写。
     ...(options.replaceTree
       ? [`printf '%s\\n' '{"hash":"${options.treeHash}","version":"${options.treeVersion}"}' > "$HOME/${SYNC_MARKER}"`]
       : []),
