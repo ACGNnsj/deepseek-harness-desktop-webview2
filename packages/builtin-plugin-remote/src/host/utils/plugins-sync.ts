@@ -17,18 +17,18 @@ const SYNC_MARKER = `${REMOTE_PLUGINS_DIR}/.sync.json`
 /** 接线状态按档案各放各的：接线是档案级的事，不放在共享的插件目录里。 */
 const PROFILE_STATE_DIR = `${REMOTE_ROOT}/profiles-sync`
 const REMOTE_PLUGIN_PACKAGE = 'dsh-tauri-remote'
+const LAUNCHER_ONLY_PLUGINS = ['dsh-tauri-pet', 'dsh-tauri-remote']
 /** 换树脚本发现远端标记已变时的退出码：这轮判定作废，桌面端重新读标记再判。 */
 const MARKER_CHANGED_EXIT = 22
 const DECISION_ATTEMPTS = 3
 
 export const WIRE_SCRIPT = `const fs = require('fs')
 const path = require('path')
-const [profilePkg, base, profileStatePath, treeHash] = process.argv.slice(2)
-// 接线用的插件名从这份插件目录里读，不从本机带过来：远端这份可能是别的桌面部署的，
-// 插件名不一样时，按本机的名字接线会连到不存在的目录。
+const [profilePkg, base, profileStatePath, wiringState, allowlist] = process.argv.slice(2)
+const allowed = new Set(JSON.parse(allowlist))
 const names = fs.existsSync(base)
   ? fs.readdirSync(base, { withFileTypes: true })
-      .filter(entry => entry.isDirectory() && !entry.name.startsWith('@') && !entry.name.startsWith('.'))
+      .filter(entry => entry.isDirectory() && allowed.has(entry.name))
       .map(entry => entry.name)
       .filter(name => {
         try {
@@ -70,10 +70,10 @@ for (const name of Object.keys(doc.dependencies)) {
 }
 fs.writeFileSync(profilePkg, JSON.stringify(doc, null, 2) + '\\n')
 // 接线状态按档案记：接线是档案级的事，不写进共享的插件目录（那里放的是目录本身的状态）。
-if (profileStatePath && treeHash) {
+if (profileStatePath && wiringState) {
   fs.mkdirSync(path.dirname(profileStatePath), { recursive: true })
   const temp = profileStatePath + '.tmp'
-  fs.writeFileSync(temp, treeHash + '\\n')
+  fs.writeFileSync(temp, wiringState + '\\n')
   fs.renameSync(temp, profileStatePath)
 }
 console.log('wired ' + names.length + ' bundled plugins')
@@ -111,23 +111,102 @@ export function findBundledPluginsTree(ownPkgDir = dirname(realpathSync(fileURLT
       || !existsSync(join(root, 'ssh2', 'package.json'))) {
       continue
     }
-    const pluginNames = readdirSync(root, { withFileTypes: true })
-      .filter(entry => !entry.name.startsWith('@') && !entry.name.startsWith('.'))
-      .map(entry => entry.name)
-      .filter((name) => {
-        try {
-          const manifest = JSON.parse(readFileSync(join(root, name, 'package.json'), 'utf8')) as { dsh?: unknown }
-          return manifest.dsh !== undefined
-        }
-        catch {
-          return false
-        }
-      })
+    const declared = declaredBuiltinPlugins(root)
+    if (declared === undefined)
+      continue
+    const allowed = new Set(declared.filter(name => !LAUNCHER_ONLY_PLUGINS.includes(name)))
+    const pluginNames = readdirSync(root)
+      .filter(name => allowed.has(name) && declaresDsh(root, name))
       .sort()
     if (pluginNames.length > 0)
       return { root, pluginNames, version: bundledTreeVersion(root) }
   }
   return undefined
+}
+
+function declaredBuiltinPlugins(root: string): string[] | undefined {
+  try {
+    const raw = readFileSync(join(dirname(root), 'manifest.jsonc'), 'utf8')
+    const doc = JSON.parse(stripJsonc(raw.replace(/^\uFEFF/u, ''))) as { plugins?: Record<string, unknown> }
+    const entries = doc.plugins?.['built-in']
+    if (!Array.isArray(entries))
+      return undefined
+    const names = entries
+      .map(entry => typeof entry === 'string' ? entry : (entry as { spec?: unknown }).spec)
+      .filter((spec): spec is string => typeof spec === 'string' && spec !== '')
+      .map(packageNameOf)
+    return names.length > 0 ? names : undefined
+  }
+  catch {
+    return undefined
+  }
+}
+
+function packageNameOf(spec: string): string {
+  const at = spec.lastIndexOf('@')
+  return at > 0 ? spec.slice(0, at) : spec
+}
+
+function declaresDsh(root: string, name: string): boolean {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, name, 'package.json'), 'utf8')) as { dsh?: unknown }
+    return manifest.dsh !== undefined
+  }
+  catch {
+    return false
+  }
+}
+
+function stripJsonc(raw: string): string {
+  let out = ''
+  let inString = false
+  let comma = -1
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw.charAt(index)
+    if (inString) {
+      out += char
+      if (char === '\\') {
+        out += raw.charAt(index + 1)
+        index += 1
+      }
+      else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+    if (char === '"') {
+      comma = -1
+      inString = true
+      out += char
+      continue
+    }
+    if (char === '/' && raw.charAt(index + 1) === '/') {
+      while (index < raw.length && raw.charAt(index) !== '\n')
+        index += 1
+      continue
+    }
+    if (char === '/' && raw.charAt(index + 1) === '*') {
+      index += 2
+      while (index + 1 < raw.length && !(raw.charAt(index) === '*' && raw.charAt(index + 1) === '/'))
+        index += 1
+      index += 1
+      continue
+    }
+    if (char === ',') {
+      comma = out.length
+      out += char
+      continue
+    }
+    if (/\s/u.test(char)) {
+      out += char
+      continue
+    }
+    if (comma >= 0 && (char === '}' || char === ']'))
+      out = out.slice(0, comma) + out.slice(comma + 1)
+    comma = -1
+    out += char
+  }
+  return out
 }
 
 function bundledTreeVersion(root: string): string {
@@ -212,7 +291,7 @@ export function pluginSyncMarkerCommand(): string {
   return `cat "$HOME/${SYNC_MARKER}" 2>/dev/null || true`
 }
 
-/** 这个档案接的是哪一份插件目录（内容哈希）：没接过线就是空。 */
+/** 这个档案接过线的状态（内容哈希 + 插件名单指纹）：没接过线就是空。 */
 export function pluginSyncProfileStateCommand(profileName: string): string {
   return `cat "$HOME/${PROFILE_STATE_DIR}/${profileName}" 2>/dev/null || true`
 }
@@ -242,18 +321,23 @@ export interface PluginSyncPlan {
  * 换树与接线分开：插件目录是整台远端共享的，接线是按档案的。远端这份由别的桌面部署时，
  * 本机不换树，但本机这个档案还没接过线，就只补接线——否则那个档案会一直缺捆绑插件。
  */
-export function planPluginSync(remote: PluginSyncMarker | undefined, ours: PluginSyncMarker, wiredHash: string | undefined): PluginSyncPlan {
+export function planPluginSync(remote: PluginSyncMarker | undefined, ours: PluginSyncMarker, wired: string | undefined, pluginNames: string[]): PluginSyncPlan {
   if (remote === undefined) {
     return { replaceTree: true, wireProfile: true, treeHash: ours.hash, treeVersion: ours.version, reason: '' }
   }
   const replaceTree = remote.hash !== ours.hash && winsOver(ours, remote)
   const treeHash = replaceTree ? ours.hash : remote.hash
   const treeVersion = replaceTree ? ours.version : remote.version
-  const wireProfile = wiredHash !== treeHash
+  const wireProfile = wired !== wiringStateOf(treeHash, pluginNames)
   const reason = !replaceTree && remote.hash !== ours.hash
     ? `远端捆绑插件由版本 ${remote.version} 的桌面部署，本机是 ${ours.version}，未覆盖（两端反复同步会重启共享实例）`
     : ''
   return { replaceTree, wireProfile, treeHash, treeVersion, reason }
+}
+
+export function wiringStateOf(treeHash: string, pluginNames: string[]): string {
+  const digest = createHash('sha256').update(pluginNames.join('\n')).digest('hex').slice(0, 16)
+  return `${treeHash}:${digest}`
 }
 
 function winsOver(ours: PluginSyncMarker, theirs: PluginSyncMarker): boolean {
@@ -286,8 +370,10 @@ export function pluginSyncApplyCommand(options: {
   replaceTree: boolean
   treeHash: string
   treeVersion: string
+  pluginNames: string[]
 }): string {
   const profile = `.dsh/profiles/${options.profileName}`
+  const wiringState = wiringStateOf(options.treeHash, options.pluginNames)
   return [
     'set -e',
     `ROOT="$HOME/${REMOTE_ROOT}"`,
@@ -309,7 +395,7 @@ export function pluginSyncApplyCommand(options: {
       ? []
       : [
           `WIRED="$(cat "$HOME/${PROFILE_STATE_DIR}/${options.profileName}" 2>/dev/null || true)"`,
-          `if [ "$WIRED" = "${options.treeHash}" ]; then echo PLUGINS_SYNCED; exit 0; fi`,
+          `if [ "$WIRED" = "${wiringState}" ]; then echo PLUGINS_SYNCED; exit 0; fi`,
         ]),
     'cat > "$TMP/_wire.js" <<\'DSH_WIRE_EOF\'',
     WIRE_SCRIPT,
@@ -342,7 +428,11 @@ export function pluginSyncApplyCommand(options: {
       : []),
     // 接线：档案的 package.json 与 node_modules 指向这份插件目录。
     `[ -f "$HOME/${profile}/package.json" ] || "$HOME/${REMOTE_ROOT}/runtime/bin/node" "$HOME/${REMOTE_ROOT}/dependencies/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" --profile ${options.profileName} --from-default-profile web --help >/dev/null 2>&1`,
-    `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$TMP/_wire.js" "$HOME/${profile}/package.json" "$BASE/node_modules" "$HOME/${PROFILE_STATE_DIR}/${options.profileName}" "${options.treeHash}"`,
+    `"$HOME/${REMOTE_ROOT}/runtime/bin/node" "$TMP/_wire.js" "$HOME/${profile}/package.json" "$BASE/node_modules" "$HOME/${PROFILE_STATE_DIR}/${options.profileName}" "${wiringState}" '${JSON.stringify(options.pluginNames)}'`,
+    // 这份目录的状态跟着目录走：换完树再写，写的就是现在这份。接线没成功就不写。
+    ...(options.replaceTree
+      ? [`printf '%s\\n' '{"hash":"${options.treeHash}","version":"${options.treeVersion}"}' > "$HOME/${SYNC_MARKER}"`]
+      : []),
     'echo PLUGINS_SYNCED',
   ].join('\n')
 }
@@ -364,7 +454,7 @@ export async function syncBundledPlugins(
   for (let attempt = 0; attempt < DECISION_ATTEMPTS; attempt += 1) {
     const remote = await readRemoteMarker(session)
     const wired = await readProfileState(session, profileName)
-    const plan = planPluginSync(remote, ours, wired)
+    const plan = planPluginSync(remote, ours, wired, tree.pluginNames)
     if (!plan.replaceTree && !plan.wireProfile) {
       if (plan.reason !== '')
         hooks.onEvent?.('install', plan.reason)
@@ -387,6 +477,7 @@ export async function syncBundledPlugins(
       replaceTree: plan.replaceTree,
       treeHash: plan.treeHash,
       treeVersion: plan.treeVersion,
+      pluginNames: tree.pluginNames,
     })
     const applied = await session.exec(command, plan.replaceTree ? { stdinData: tar } : {})
     // 拿到占用声明时发现远端标记已经变了：这轮判定作废，重新读一次再判。
