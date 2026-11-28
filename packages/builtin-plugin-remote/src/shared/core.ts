@@ -159,3 +159,13 @@ export const REMOTE_CORE_PLATFORMS: CorePlatform[] = ['linux-x64', 'linux-arm64'
 export function remoteCoreTargetId(machineId: string, remoteProfile: string): string {
   return `remote:${machineId}:${remoteProfile}`
 }
+
+export interface RemoteInstanceStatus {
+  verdict: 'match' | 'mismatch' | 'unknown'
+  actual?: string
+  expected: string
+  port: number
+  pid?: string
+  createdByDesktop?: boolean
+  clientCount?: number
+}

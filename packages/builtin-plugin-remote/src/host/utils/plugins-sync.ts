@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import semver from 'semver'
 import { BOOTSTRAP_LOG_PREFIX, REMOTE_ROOT } from '../config/constants'
-import { assertListenerProfile, remoteInstanceStopCommand, remoteSlotClaimShell } from './instance'
+import { readListenerState, remoteInstanceStopCommand, remoteSlotClaimShell } from './instance'
 
 const REMOTE_PLUGINS_DIR = `${REMOTE_ROOT}/plugins`
 /** 这份插件目录的状态：内容哈希 + 部署它的桌面版本。它描述目录本身，跟着目录走。 */
@@ -370,8 +370,11 @@ export async function syncBundledPlugins(
         hooks.onEvent?.('install', plan.reason)
       return false
     }
-    // 端口上跑的不是自己以为的那个档案时不能动它：那是别人的实例。
-    await assertListenerProfile(session, remotePort, profileName)
+    const listener = await readListenerState(session, remotePort, profileName)
+    if (listener.verdict === 'mismatch') {
+      hooks.onEvent?.('install', `跳过捆绑插件同步：端口 ${remotePort} 上的实例用的是档案「${listener.actual}」，与本机配置的「${profileName}」不符；为避免打断别人的实例，未写入，请在档案面板确认后再处理`)
+      return false
+    }
     if (attempt === 0) {
       hooks.onEvent?.('install', plan.replaceTree
         ? `同步桌面捆绑插件到远端（${tree.pluginNames.length} 个, ${sizeMb} MB）`
