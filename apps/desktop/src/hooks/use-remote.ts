@@ -221,6 +221,30 @@ export function useRemote() {
     disconnect.mutate(machineId)
   }
 
+  async function ensureConnected(machineId: string, timeoutMs = 180_000): Promise<boolean> {
+    const current = machines.find(machine => machine.id === machineId)
+    if (current?.state === 'connected' && current.tunnelBaseUrl !== undefined)
+      return true
+    try {
+      await postMachinesConnect({ machineId })
+    }
+    catch {
+    }
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const rows = machineRowsOf(await getMachines()).machines
+      const row = rows.find(machine => machine.id === machineId)
+      if (row?.state === 'connected' && row.tunnelBaseUrl !== undefined) {
+        void invalidate()
+        return true
+      }
+      if (row?.state === 'given-up')
+        return false
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+    return false
+  }
+
   return {
     machines,
     enabled,
@@ -235,6 +259,7 @@ export function useRemote() {
     disconnect: disconnectMachine,
     dismissConnect,
     refresh,
+    ensureConnected,
   }
 }
 

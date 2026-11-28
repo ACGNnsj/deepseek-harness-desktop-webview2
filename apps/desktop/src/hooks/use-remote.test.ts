@@ -418,3 +418,31 @@ describe('useRemote 切换和连接进度', () => {
     expect(result.current.connectFailed).toBeNull()
   })
 })
+
+describe('useRemote ensureConnected', () => {
+  it('已连接且有隧道地址时立即成功，不重复连接', async () => {
+    rows = [machineOf({ state: 'connected', tunnelBaseUrl: 'http://127.0.0.1:4001' })]
+    const { result } = await ready()
+    await expect(result.current.ensureConnected('m1')).resolves.toBe(true)
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  it('未连接时先发起连接，再轮询到已连接', async () => {
+    const { result } = await ready()
+    await act(async () => {
+      await expect(result.current.ensureConnected('m1')).resolves.toBe(true)
+    })
+    expect(connect).toHaveBeenCalledWith('m1')
+  })
+
+  it('远端放弃连接时返回失败', async () => {
+    connect = vi.fn(async () => {
+      rows = [machineOf({ state: 'given-up' })]
+      throw new Error('already connecting')
+    })
+    const { result } = await ready()
+    await act(async () => {
+      await expect(result.current.ensureConnected('m1')).resolves.toBe(false)
+    })
+  })
+})
