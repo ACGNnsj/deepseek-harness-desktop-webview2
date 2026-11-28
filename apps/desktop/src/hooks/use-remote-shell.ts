@@ -1,8 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useState } from 'react'
 
-export function useRemoteShellMachine(): string | null {
-  const [machineId, setMachineId] = useState<string | null>(null)
+export function useRemoteShellMachine(): string | null | undefined {
+  const [machineId, setMachineId] = useState<string | null | undefined>(undefined)
   useEffect(() => {
     let alive = true
     const load = (): void => {

@@ -242,17 +242,37 @@ export const machine = defineService({
     requireCapabilities(machineId, profile, ['exec'])
     const target = ensureState(machineId)
     refuseWhileReconnecting(machineId, target)
+    if (target.restarting !== undefined)
+      throw new RemoteError('machine-install-failed', machineId, 'machine is restarting; wait for it to finish before installing')
     if (target.installing === undefined) {
-      if (options.force === true && target.link !== undefined)
-        await machine.disconnect(machineId)
-      target.progress = { phase: 'installing' }
-      emit(machineId)
-      const attempt = performInstall(machineId, profile, options, signal)
+      const attempt = (async () => {
+        if (options.force === true && target.link !== undefined)
+          await machine.disconnect(machineId)
+        target.progress = { phase: 'installing' }
+        emit(machineId)
+        return performInstall(machineId, profile, options, signal)
+      })()
       target.installing = attempt.finally(() => {
         delete machineStates.get(machineId)?.installing
       })
     }
     return target.installing
+  },
+
+  async restart(machineId: MachineId): Promise<void> {
+    const profile = requireProfile(machineId)
+    requireCapabilities(machineId, profile, ['exec'])
+    const target = ensureState(machineId)
+    refuseWhileReconnecting(machineId, target)
+    if (target.installing !== undefined)
+      throw new RemoteError('machine-restart-failed', machineId, 'machine is installing; wait for it to finish before restarting the instance')
+    if (target.restarting === undefined) {
+      const attempt = performRestart(machineId, profile)
+      target.restarting = attempt.finally(() => {
+        delete machineStates.get(machineId)?.restarting
+      })
+    }
+    return target.restarting
   },
 
   async save(machineId: MachineId, row: MachineSaveRow, secrets?: MachineSecretWrite): Promise<void> {
@@ -803,6 +823,40 @@ function redacted(machineId: MachineId, text: string): string {
       out = out.replaceAll(secret, '***')
   }
   return out
+}
+
+async function performRestart(machineId: MachineId, profile: MachineProfile): Promise<void> {
+  const target = ensureState(machineId)
+  const generation = target.generation
+  const session = await openSessionOrFail(machineId, profile)
+  try {
+    target.progress = { phase: 'starting' }
+    emit(machineId)
+    await bootstrap.restart(session, profile, {
+      onEvent: (stage, line, options) => {
+        if (generation === target.generation)
+          events.append(machineId, stage, line, options)
+      },
+      onProgress: (progress) => {
+        if (generation !== target.generation)
+          return
+        target.progress = progress
+        emit(machineId)
+      },
+    })
+  }
+  catch (error) {
+    if (error instanceof RemoteError)
+      throw error
+    throw new RemoteError('machine-restart-failed', machineId, redacted(machineId, messageOf(error)))
+  }
+  finally {
+    if (generation === target.generation) {
+      delete target.progress
+      emit(machineId)
+    }
+    await session.close().catch(() => undefined)
+  }
 }
 
 async function performInstall(machineId: MachineId, profile: MachineProfile, options: { force?: boolean, ackProfileMismatch?: boolean }, signal?: AbortSignal): Promise<RemoteInstallResult> {
